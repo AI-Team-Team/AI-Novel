@@ -1,0 +1,81 @@
+# =============================
+# Generation Model Configuration
+# =============================
+models:
+  # Options: "gemini", "openai"
+  primary_type: "openai"
+  architect_type: "openai"
+  planner_type: "openai"
+  writer_type: "openai"
+  critic_type: "openai"
+  scanner_type: "openai"
+
+# Gemini settings (generation)
+gemini:
+  api_key: "YOUR_API_KEY_HERE"  # Can be overridden by GEMINI_API_KEY environment variable
+  default_model: "gemini-3-flash"
+  architect_model: "gemini-3-flash"
+  planner_model: "gemini-3-flash"
+  writer_model: "gemini-3-flash"
+  critic_model: "gemini-3-flash"
+  scanner_model: "gemini-3-flash"
+
+# OpenAI-compatible settings (generation), e.g. LM Studio / llama.cpp / vLLM
+openai:
+  api_key: ""  # Can be overridden by OPENAI_API_KEY environment variable
+  base_url: "http://localhost:----/v1"  # Can be overridden by OPENAI_BASE_URL environment variable
+  default_model: "local-model"
+  architect_model: "local-model"
+  planner_model: "local-model"
+  writer_model: "local-model"
+  critic_model: "local-model"
+  scanner_model: "local-model"
+
+# =============================
+# Embedding Configuration
+# =============================
+embedding:
+  # Options: "gemini", "openai"
+  provider: "openai"
+  base_url: "http://localhost:----/v1"  # Can be overridden by EMBEDDING_BASE_URL env var
+  api_key: ""  # Can be overridden by EMBEDDING_API_KEY env var
+  model_name: "local-embedding-model"
+  dim: 768
+  gemini_model: "text-embedding-004"
+
+# =============================
+# Paths / Project
+# =============================
+project:
+  db_path: "novel/process/facts/facts.db"
+  faiss_index_path: "novel/process/facts/vector_index.faiss"
+  novel_title: "Untitled Novel"
+  output_dir: "novel/main_text"
+  frame_dir: "novel/frame"
+  process_dir: "novel/process"
+  # Language: "Chinese" or "English"
+  language: "Chinese"
+
+# =============================
+# Retrieval / Constraint Controls
+# =============================
+retrieval:
+  tier_1_relevance_threshold: 0.9
+  tier_3_search_limit: 5
+
+# =============================
+# Workflow Controls
+# =============================
+workflow:
+  world_discussion_rounds: 1
+  plot_discussion_rounds: 1
+  detailed_plot_discussion_rounds: 1
+  chapter_guide_discussion_rounds: 1
+  chapter_revision_rounds: 1
+  chapter_text_discussion_rounds: 1
+  auto_generation_max_retries: 3
+  
+  # Blocking conflict governance mode:
+  # - "auto_keep_existing": auto-resolve BLOCKING conflicts by keep_existing before gating.
+  # - "manual_block": never auto-resolve BLOCKING conflicts; fail fast until resolved manually.
+  blocking_conflict_mode: "auto_keep_existing"

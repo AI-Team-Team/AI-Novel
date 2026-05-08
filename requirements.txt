@@ -4,3 +4,4 @@ numpy
 pydantic
 sqlalchemy
 openai
+PyYAML

@@ -39,7 +39,7 @@ Many thanks to Gemini and GPT for their help!
    ```
 
 3. **Configuration:**
-   * Open `src/config.py`.
+   * Open `config.yaml`.
    * Set `LANGUAGE = "Chinese"` or `"English"`.
    * Configure role model routing and workflow controls.
 

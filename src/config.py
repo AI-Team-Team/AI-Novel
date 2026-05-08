@@ -1,110 +1,91 @@
 import os
+import yaml
 
 ROLE_NAMES = ("ARCHITECT", "PLANNER", "WRITER", "CRITIC", "SCANNER")
 
-def _env_str(name: str, default: str) -> str:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    value = value.strip()
-    return value if value else default
+def _load_config():
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    yaml_path = os.path.join(project_root, "config.yaml")
+    if os.path.exists(yaml_path):
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
 
-def _env_int(name: str, default: int) -> int:
-    raw = _env_str(name, str(default))
-    try:
-        return int(raw)
-    except ValueError:
-        return default
+_cfg = _load_config()
 
-def _env_float(name: str, default: float) -> float:
-    raw = _env_str(name, str(default))
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
+# Helper to safely get nested yaml keys
+def _get(section: str, key: str, default):
+    return _cfg.get(section, {}).get(key, default)
 
 # =============================
 # Generation Model Configuration
 # =============================
-# Options: "gemini", "openai"
-PRIMARY_MODEL_TYPE = _env_str("PRIMARY_MODEL_TYPE", "openai")
-ROLE_MODEL_TYPES = {
-    role: _env_str(f"{role}_MODEL_TYPE", PRIMARY_MODEL_TYPE) for role in ROLE_NAMES
-}
-ARCHITECT_MODEL_TYPE = ROLE_MODEL_TYPES["ARCHITECT"]
-PLANNER_MODEL_TYPE = ROLE_MODEL_TYPES["PLANNER"]
-WRITER_MODEL_TYPE = ROLE_MODEL_TYPES["WRITER"]
-CRITIC_MODEL_TYPE = ROLE_MODEL_TYPES["CRITIC"]
-SCANNER_MODEL_TYPE = ROLE_MODEL_TYPES["SCANNER"]
+PRIMARY_MODEL_TYPE = _get("models", "primary_type", "openai")
+
+ARCHITECT_MODEL_TYPE = _get("models", "architect_type", PRIMARY_MODEL_TYPE)
+PLANNER_MODEL_TYPE = _get("models", "planner_type", PRIMARY_MODEL_TYPE)
+WRITER_MODEL_TYPE = _get("models", "writer_type", PRIMARY_MODEL_TYPE)
+CRITIC_MODEL_TYPE = _get("models", "critic_type", PRIMARY_MODEL_TYPE)
+SCANNER_MODEL_TYPE = _get("models", "scanner_type", PRIMARY_MODEL_TYPE)
 
 # Gemini settings (generation)
-GEMINI_API_KEY = _env_str("GEMINI_API_KEY", "YOUR_API_KEY_HERE")
-GEMINI_MODEL_NAME = _env_str("GEMINI_MODEL_NAME", "gemini-3-flash")
-ROLE_GEMINI_MODEL_NAMES = {
-    role: _env_str(f"{role}_GEMINI_MODEL_NAME", GEMINI_MODEL_NAME) for role in ROLE_NAMES
-}
-ARCHITECT_GEMINI_MODEL_NAME = ROLE_GEMINI_MODEL_NAMES["ARCHITECT"]
-PLANNER_GEMINI_MODEL_NAME = ROLE_GEMINI_MODEL_NAMES["PLANNER"]
-WRITER_GEMINI_MODEL_NAME = ROLE_GEMINI_MODEL_NAMES["WRITER"]
-CRITIC_GEMINI_MODEL_NAME = ROLE_GEMINI_MODEL_NAMES["CRITIC"]
-SCANNER_GEMINI_MODEL_NAME = ROLE_GEMINI_MODEL_NAMES["SCANNER"]
+# Privacy fields fallback to environment variables
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or _get("gemini", "api_key", "YOUR_API_KEY_HERE")
+GEMINI_MODEL_NAME = _get("gemini", "default_model", "gemini-3-flash")
 
-# OpenAI-compatible settings (generation), e.g. LM Studio / llama.cpp / vLLM
-OPENAI_API_KEY = _env_str("OPENAI_API_KEY", "lm-studio")
-OPENAI_BASE_URL = _env_str("OPENAI_BASE_URL", "http://localhost:----/v1")
-OPENAI_MODEL_NAME = _env_str("OPENAI_MODEL_NAME", "local-model")
-ROLE_OPENAI_MODEL_NAMES = {
-    role: _env_str(f"{role}_OPENAI_MODEL_NAME", OPENAI_MODEL_NAME) for role in ROLE_NAMES
-}
-ARCHITECT_OPENAI_MODEL_NAME = ROLE_OPENAI_MODEL_NAMES["ARCHITECT"]
-PLANNER_OPENAI_MODEL_NAME = ROLE_OPENAI_MODEL_NAMES["PLANNER"]
-WRITER_OPENAI_MODEL_NAME = ROLE_OPENAI_MODEL_NAMES["WRITER"]
-CRITIC_OPENAI_MODEL_NAME = ROLE_OPENAI_MODEL_NAMES["CRITIC"]
-SCANNER_OPENAI_MODEL_NAME = ROLE_OPENAI_MODEL_NAMES["SCANNER"]
+ARCHITECT_GEMINI_MODEL_NAME = _get("gemini", "architect_model", GEMINI_MODEL_NAME)
+PLANNER_GEMINI_MODEL_NAME = _get("gemini", "planner_model", GEMINI_MODEL_NAME)
+WRITER_GEMINI_MODEL_NAME = _get("gemini", "writer_model", GEMINI_MODEL_NAME)
+CRITIC_GEMINI_MODEL_NAME = _get("gemini", "critic_model", GEMINI_MODEL_NAME)
+SCANNER_GEMINI_MODEL_NAME = _get("gemini", "scanner_model", GEMINI_MODEL_NAME)
+
+# OpenAI-compatible settings
+# Privacy fields fallback to environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or _get("openai", "api_key", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or _get("openai", "base_url", "")
+OPENAI_MODEL_NAME = _get("openai", "default_model", "local-model")
+
+ARCHITECT_OPENAI_MODEL_NAME = _get("openai", "architect_model", OPENAI_MODEL_NAME)
+PLANNER_OPENAI_MODEL_NAME = _get("openai", "planner_model", OPENAI_MODEL_NAME)
+WRITER_OPENAI_MODEL_NAME = _get("openai", "writer_model", OPENAI_MODEL_NAME)
+CRITIC_OPENAI_MODEL_NAME = _get("openai", "critic_model", OPENAI_MODEL_NAME)
+SCANNER_OPENAI_MODEL_NAME = _get("openai", "scanner_model", OPENAI_MODEL_NAME)
 
 # =============================
 # Embedding Configuration
 # =============================
-# Options: "gemini", "openai"
-EMBEDDING_PROVIDER = _env_str("EMBEDDING_PROVIDER", "openai")
-EMBEDDING_BASE_URL = _env_str("EMBEDDING_BASE_URL", "http://localhost:----/v1")
-EMBEDDING_API_KEY = _env_str("EMBEDDING_API_KEY", "")
-EMBEDDING_MODEL_NAME = _env_str("EMBEDDING_MODEL_NAME", "local-embedding-model")
-EMBEDDING_DIM = _env_int("EMBEDDING_DIM", 768)
-GEMINI_EMBEDDING_MODEL = _env_str("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
+EMBEDDING_PROVIDER = _get("embedding", "provider", "openai")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL") or _get("embedding", "base_url", "")
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or _get("embedding", "api_key", "")
+EMBEDDING_MODEL_NAME = _get("embedding", "model_name", "local-embedding-model")
+EMBEDDING_DIM = int(_get("embedding", "dim", 768))
+GEMINI_EMBEDDING_MODEL = _get("embedding", "gemini_model", "text-embedding-004")
 
 # =============================
 # Paths / Project
 # =============================
-DB_PATH = _env_str("DB_PATH", "novel/process/facts/facts.db")
-FAISS_INDEX_PATH = _env_str("FAISS_INDEX_PATH", "novel/process/facts/vector_index.faiss")
-NOVEL_TITLE = _env_str("NOVEL_TITLE", "Untitled Novel")
-OUTPUT_DIR = _env_str("OUTPUT_DIR", "novel/main_text")
-FRAME_DIR = _env_str("FRAME_DIR", "novel/frame")
-PROCESS_DIR = _env_str("PROCESS_DIR", "novel/process")
-LANGUAGE = _env_str("LANGUAGE", "English")  # "English" or "Chinese"
+DB_PATH = _get("project", "db_path", "novel/process/facts/facts.db")
+FAISS_INDEX_PATH = _get("project", "faiss_index_path", "novel/process/facts/vector_index.faiss")
+NOVEL_TITLE = _get("project", "novel_title", "Untitled Novel")
+OUTPUT_DIR = _get("project", "output_dir", "novel/main_text")
+FRAME_DIR = _get("project", "frame_dir", "novel/frame")
+PROCESS_DIR = _get("project", "process_dir", "novel/process")
+LANGUAGE = _get("project", "language", "Chinese")
 
 # =============================
 # Retrieval / Constraint Controls
 # =============================
-TIER_1_RELEVANCE_THRESHOLD = _env_float("TIER_1_RELEVANCE_THRESHOLD", 0.9)
-TIER_3_SEARCH_LIMIT = _env_int("TIER_3_SEARCH_LIMIT", 5)
+TIER_1_RELEVANCE_THRESHOLD = float(_get("retrieval", "tier_1_relevance_threshold", 0.9))
+TIER_3_SEARCH_LIMIT = int(_get("retrieval", "tier_3_search_limit", 5))
 
 # =============================
 # Workflow Controls
 # =============================
-WORLD_DISCUSSION_ROUNDS = _env_int("WORLD_DISCUSSION_ROUNDS", 1)
-PLOT_DISCUSSION_ROUNDS = _env_int("PLOT_DISCUSSION_ROUNDS", 1)
-DETAILED_PLOT_DISCUSSION_ROUNDS = _env_int("DETAILED_PLOT_DISCUSSION_ROUNDS", 1)
-CHAPTER_GUIDE_DISCUSSION_ROUNDS = _env_int("CHAPTER_GUIDE_DISCUSSION_ROUNDS", 1)
-CHAPTER_REVISION_ROUNDS = _env_int("CHAPTER_REVISION_ROUNDS", 1)
-CHAPTER_TEXT_DISCUSSION_ROUNDS = _env_int(
-    "CHAPTER_TEXT_DISCUSSION_ROUNDS", CHAPTER_REVISION_ROUNDS
-)
-AUTO_GENERATION_MAX_RETRIES = _env_int("AUTO_GENERATION_MAX_RETRIES", 3)
-
-# Blocking conflict governance mode:
-# - "auto_keep_existing": auto-resolve BLOCKING conflicts by keep_existing before gating.
-# - "manual_block": never auto-resolve BLOCKING conflicts; fail fast until resolved manually.
-BLOCKING_CONFLICT_MODE = _env_str("BLOCKING_CONFLICT_MODE", "auto_keep_existing").lower()
+WORLD_DISCUSSION_ROUNDS = int(_get("workflow", "world_discussion_rounds", 1))
+PLOT_DISCUSSION_ROUNDS = int(_get("workflow", "plot_discussion_rounds", 1))
+DETAILED_PLOT_DISCUSSION_ROUNDS = int(_get("workflow", "detailed_plot_discussion_rounds", 1))
+CHAPTER_GUIDE_DISCUSSION_ROUNDS = int(_get("workflow", "chapter_guide_discussion_rounds", 1))
+CHAPTER_REVISION_ROUNDS = int(_get("workflow", "chapter_revision_rounds", 1))
+CHAPTER_TEXT_DISCUSSION_ROUNDS = int(_get("workflow", "chapter_text_discussion_rounds", CHAPTER_REVISION_ROUNDS))
+AUTO_GENERATION_MAX_RETRIES = int(_get("workflow", "auto_generation_max_retries", 3))
+BLOCKING_CONFLICT_MODE = str(_get("workflow", "blocking_conflict_mode", "auto_keep_existing")).lower()

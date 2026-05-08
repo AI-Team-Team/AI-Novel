@@ -23,7 +23,7 @@ This guide will walk you through setting up and using the AI Novel project to ge
 
 ## 2. Configuration
 
-Open `src/config.py` to customize the system behavior:
+Open `config.yaml` to customize the system behavior:
 
 * **Language**: Set `LANGUAGE = "Chinese"` or `"English"`.
 * **Models**: Configure the `PRIMARY_MODEL_TYPE` and specific model names for each agent (Architect, Planner, Writer, Critic, Scanner).
