@@ -76,57 +76,29 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         """Initialize FAISS index for Tier 3."""
         if faiss is None:
             print("Warning: FAISS not installed. Vector search will be disabled.")
+            self.index = None
             return
-
-        def _clear_metadata_for_fresh_index(reason: str):
-            if not self.cursor:
-                return
-            self.cursor.execute("SELECT COUNT(*) FROM vector_metadata")
-            row = self.cursor.fetchone()
-            existing = int(row[0]) if row else 0
-            if existing <= 0:
-                return
-            print(f"Warning: {reason}. Clearing {existing} vector_metadata rows to keep FAISS/SQLite aligned.")
-            self.cursor.execute("DELETE FROM vector_metadata")
-            self._maybe_commit()
 
         if os.path.exists(self.faiss_path):
             try:
                 self.index = faiss.read_index(self.faiss_path)
-                if self.index.d != self.embedding_dim:
-                    print(f"Warning: Existing index dimension ({self.index.d}) does not match config ({self.embedding_dim}). Recreating index.")
-                    # Reset index
-                    self.index = faiss.IndexFlatL2(self.embedding_dim)
-                    # Must also clear metadata table because FAISS IDs will reset to 0
-                    _clear_metadata_for_fresh_index("Index dimension mismatch")
-                    # Also need to clear vector_metadata in SQLite to stay in sync? 
-                    # Ideally yes, but that's a bigger migration. 
-                    # For a prototype, ensuring we don't crash is step 1.
-                    # We will assume new embeddings will just be added to a fresh index.
-                    # However, searching old metadata will fail to find vectors.
-                    # A complete reset would involve: self.cursor.execute("DELETE FROM vector_metadata")
+                self.embedding_dim = self.index.d
             except Exception as e:
-                print(f"Error loading FAISS index: {e}. Creating new one.")
-                self.index = faiss.IndexFlatL2(self.embedding_dim)
-                _clear_metadata_for_fresh_index("Failed to load FAISS index")
+                print(f"Error loading FAISS index: {e}. Vector search will start empty. Please run --rebuild-vectors to restore.")
+                self.index = None
         else:
-            self.index = faiss.IndexFlatL2(self.embedding_dim)
-            _clear_metadata_for_fresh_index("FAISS index file missing")
+            self.index = None
 
     def save_faiss(self):
         if self.index and faiss:
             faiss.write_index(self.index, self.faiss_path)
 
     def _reset_vector_store(self, new_dim: int):
-        """Rebuild FAISS index and clear metadata to keep id mapping consistent."""
-        if faiss is None:
-            return
-        self.embedding_dim = new_dim
-        self.index = faiss.IndexFlatL2(new_dim)
-        if self.cursor:
-            self.cursor.execute("DELETE FROM vector_metadata")
-            self._maybe_commit()
-        self._mark_faiss_dirty()
+        """Protect vector_metadata from silent deletion during dimension mismatch."""
+        raise RuntimeError(
+            f"Embedding dimension mismatch detected (new: {new_dim}, existing: {self.embedding_dim}). "
+            "Please run --rebuild-vectors to safely migrate existing vector data."
+        )
 
     @staticmethod
     def _deep_merge_dict(base: Dict, incoming: Dict) -> Dict:
@@ -847,7 +819,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         source_commit_id: Optional[str] = None,
         intent_tag: str = "",
     ):
-        if self.index is None or faiss is None:
+        if faiss is None:
             return
 
         if not embedding:
@@ -860,6 +832,15 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         actual_dim = embedding_np.shape[1]
         if actual_dim <= 0:
             return
+
+        if self.index is None:
+            self.embedding_dim = actual_dim
+            self.index = faiss.IndexFlatL2(actual_dim)
+        elif self.index.d != actual_dim:
+            raise RuntimeError(
+                f"Embedding dimension mismatch detected (new: {actual_dim}, existing: {self.index.d}). "
+                "Please run --rebuild-vectors to safely migrate existing vector data."
+            )
 
         normalized_content = (content or "").strip()
         if not normalized_content:
@@ -878,13 +859,6 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         existing = self.cursor.fetchone()
         if existing:
             return
-
-        if self.index.d != actual_dim:
-            print(
-                f"Warning: Embedding dimension ({actual_dim}) does not match index "
-                f"dimension ({self.index.d}). Rebuilding vector index."
-            )
-            self._reset_vector_store(actual_dim)
 
         self.index.add(embedding_np)
         
