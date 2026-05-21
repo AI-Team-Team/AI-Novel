@@ -128,9 +128,19 @@ The system operates on a continuous Plan-Write-Scan loop where the output of one
      * `relationships` (Character dynamics)
      * `events` (Timeline additions)
      * `details` (Semantic chunks for Vector Store)
-   * **Validation Gate (New):**
-     * Payload must pass schema checks before DB mutation.
+   * **Validation Gate:**
+     * Payload must pass schema checks before review.
      * Invalid payloads are persisted for debugging and rejected from commit.
+
+4b. **Critic Fact Review (Pre-Commit)**
+
+   * **Input:** Validated Scanner JSON + current DB state snapshot + chapter text.
+   * **Action:** LLM Critic examines all extracted facts against established story state in a single batch call.
+   * **Detection Scope:** Dead→alive contradictions, strict world rule violations, logical/causal impossibilities, character identity contradictions.
+   * **Output:** Issues list with severity levels:
+     * `BLOCKING` — fact removed from payload; conflict queued for manual review.
+     * `NON_BLOCKING` — fact kept in payload; conflict queued as advisory.
+   * **Fallback:** If the Critic LLM call fails, facts pass through unchanged (graceful degradation).
 
 5. **Memory Manager (System)**
    * **Action:** Parses the Scanner's JSON.
@@ -163,23 +173,41 @@ Planning/writing retrieval now follows an explicit chain:
 1. Query intent classification (`task_type`, strictness, required tiers, semantic gate).
 2. SQLite prefilter (characters/rules/events/conflicts by intent scope).
 3. FAISS semantic retrieval (Tier-3 candidates).
-4. Cross-tier alignment (drop/penalize semantic hits conflicting with hard facts, e.g., dead-character active details under strict mode).
+4. Cross-tier alignment: In strict mode, filters out semantic hits mentioning dead characters. In non-strict mode, all hits pass through — nuanced classification is handled upstream by the Critic.
 5. Context package assembly for prompts (policy + compact summaries + aligned Tier-3 details).
 
-## Conflict Resolution Path
+## Conflict Detection Architecture
 
-Pending conflicts are manually resolvable through CLI actions (`keep_existing` / `apply_incoming` for supported types), and resolution state is stored back in `conflict_queue` with notes and timestamps.
+Conflict detection uses a **two-layer approach**:
+
+### Layer 1: Deterministic Checks (memory.py)
+
+Performed at the data layer during insertion:
+
+* `status_dead_to_alive` — character resurrection → `BLOCKING`
+* `identity_field_conflict` — immutable field change → `BLOCKING`
+* `timeline_dead_character_involved` — event references dead character → `NON_BLOCKING` (flagged for Critic review)
+* `relationship_type_change` — type mismatch → `NON_BLOCKING`
+* `relationship_dead_character_involved` → `NON_BLOCKING`
+* `timeline_same_key_conflict` — duplicate event key → `BLOCKING`
+* Exact deduplication (rules and events)
+
+### Layer 2: LLM Critic Review (workflow.py)
+
+Performed before DB commit in `scan_chapter()` via `_critic_review_extracted_facts()`:
+
+* Reviews all extracted facts against current DB state in a single batch LLM call.
+* Detects semantic/logical contradictions that keyword matching cannot: causal impossibilities, strict world rule violations, character identity conflicts.
+* `BLOCKING` issues → facts removed from payload, conflicts queued.
+* `NON_BLOCKING` issues → facts kept, conflicts queued as advisory.
 
 ## Conflict Levels (Blocking vs Non-Blocking)
 
-* `conflict_queue` now stores `blocking_level` (`BLOCKING` or `NON_BLOCKING`).
+* `conflict_queue` stores `blocking_level` (`BLOCKING` or `NON_BLOCKING`).
 * `conflict_queue` also stores triage metadata: `priority` and `suggested_action`.
 * Workflow gating behavior is controlled by `BLOCKING_CONFLICT_MODE`:
   * `auto_keep_existing`: auto-resolve `BLOCKING` conflicts with `keep_existing` before gate checks.
   * `manual_block`: never auto-resolve; gate blocks while any `BLOCKING` conflict remains.
-* Example:
-  * `timeline_dead_character_involved` -> `BLOCKING`
-  * `relationship_type_change` -> `NON_BLOCKING`
 
 ## Commit Replay Recovery
 
@@ -223,7 +251,14 @@ The `WorkflowResumeMixin` performs a three-stage integrity check during resume:
 
 ### 4. Language Guard
 
-Ensures output consistency by calculating a CJK/Latin confidence ratio. If the output language is incorrect, the system triggers an automatic LLM-driven rewrite loop.
+Ensures output consistency through a multi-step process:
+
+1. **Name Exclusion**: Known character names from the DB are excluded from text before computing CJK/Latin ratios, preventing false positives when Chinese names appear in English text (or vice versa).
+2. **Confidence Ratio**: Calculates CJK/Latin character ratio on the name-excluded text.
+3. **Threshold Check**: Uses direct thresholds (Chinese ≥ 20% CJK; English ≥ 60% Latin with ≤ 10% CJK) to determine if text is in the expected language.
+4. **Safety Net**: For English mode, only triggers rewrite if CJK content exceeds 30% after name exclusion.
+5. **LLM Rewrite**: If language check fails, triggers an automatic LLM-driven rewrite.
+6. **Critic Review**: Language consistency is also part of the Critic's system prompt responsibilities.
 
 ## Customization
 

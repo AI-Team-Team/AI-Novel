@@ -33,16 +33,19 @@ Every output from an LLM agent is passed through a language validator before bei
 
 ```mermaid
 flowchart TD
-    Write[Writer: Generate Prose] --> Guard{_enforce_output_language}
+    Write["Writer: Generate Prose"] --> Names["Get known character names from DB"]
+    Names --> Guard{"_enforce_output_language"}
     
-    Guard -- "Confidence >= Threshold (CJK vs Latin)" --> Accept[Accept Prose]
+    Guard -- "Exclude names → Compute CJK/Latin ratio" --> Check{"Confidence >= Threshold?"}
     
-    Guard -- "Confidence < Threshold" --> Rewrite[Log Warning: Language Guard Triggered]
-    Rewrite --> LLM_Rewrite[LLM: Specialized Rewrite Task]
+    Check -- "Yes" --> Accept["Accept Prose"]
+    
+    Check -- "No (CJK > 30% after name exclusion)" --> Rewrite["Log Warning: Language Guard Triggered"]
+    Rewrite --> LLM_Rewrite["LLM: Specialized Rewrite Task"]
     LLM_Rewrite -- "Keep structure, translate to Target Language" --> Accept
     
-    Accept --> Save[Save chapter_n.md]
-    Save --> Review[Critic: Review & Revise Chapter]
+    Accept --> Save["Save chapter_n.md"]
+    Save --> Review["Critic: Review & Revise Chapter"]
 ```
 
 ## 3. Review, Scan & Commit
@@ -51,18 +54,29 @@ The final stage ensures the written text is converted back into facts and commit
 
 ```mermaid
 flowchart TD
-    Review[Critic Review] --> NeedsRev{Needs Revision?}
-    NeedsRev -- Yes --> Writer[Writer: Apply Patch]
+    Review["Critic Review"] --> NeedsRev{"Needs Revision?"}
+    NeedsRev -- "Yes" --> Writer["Writer: Apply Patch"]
     Writer --> Review
     
-    NeedsRev -- No --> Scan[Scanner: Extract Facts]
-    Scan --> Commit{Memory: Chapter Commit}
+    NeedsRev -- "No" --> Scan["Scanner: Extract Facts (JSON)"]
+    Scan --> Validate{"Schema Validation"}
+    Validate -- "Invalid" --> SaveRaw["Persist invalid payload for debug"]
+    SaveRaw --> Error["RuntimeError"]
     
-    Commit -- COMPLETED --> End((Next Chapter))
+    Validate -- "Valid" --> CriticReview["Critic: Batch Fact Review vs DB State"]
+    CriticReview --> Filter{"Issues found?"}
+    Filter -- "BLOCKING issues" --> Remove["Remove BLOCKING facts from payload"]
+    Remove --> Queue1["Queue BLOCKING conflicts"]
+    Filter -- "NON_BLOCKING issues" --> Queue2["Queue NON_BLOCKING conflicts (facts kept)"]
+    Filter -- "No issues / LLM failure" --> Commit
+    Queue1 --> Commit{"Memory: Chapter Commit"}
+    Queue2 --> Commit
     
-    Commit -- FAILED --> FailedCommit[Record in failed_commits table]
-    FailedCommit --> User[User Resolution Required]
+    Commit -- "COMPLETED" --> End(("Next Chapter"))
     
-    User -- "--replay-commit ID" --> Replay[WorkflowManager: Replay Logic]
+    Commit -- "FAILED" --> FailedCommit["Record in failed_commits table"]
+    FailedCommit --> User["User Resolution Required"]
+    
+    User -- "--replay-commit ID" --> Replay["WorkflowManager: Replay Logic"]
     Replay --> Commit
 ```

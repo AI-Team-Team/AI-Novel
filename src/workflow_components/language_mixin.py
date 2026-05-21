@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import List, Optional
 
 import config
 from llm_client import LLMClient
 from workflow_components.parsing import contains_cjk, language_confidence
 
 
-from workflow_components.resources import get_res_num, get_resource, is_chinese
+from workflow_components.resources import get_resource
 
 
 class WorkflowLanguageMixin:
@@ -19,18 +19,35 @@ class WorkflowLanguageMixin:
     def _contains_cjk(text: str) -> bool:
         return contains_cjk(text)
 
+    def _get_known_character_names(self) -> List[str]:
+        """Retrieve character names from DB to exclude from language confidence calculation."""
+        memory = getattr(self, "memory", None)
+        if memory is None:
+            return []
+        try:
+            chars = memory.get_all_characters()
+            return [name for name, _, _ in chars] if chars else []
+        except Exception:
+            return []
+
     def _is_expected_language(self, text: str) -> bool:
-        confidence = language_confidence(text)
-        if is_chinese():
-            if confidence["chinese"] >= get_res_num("lang.confidence_chinese_min"):
+        known_names = self._get_known_character_names()
+        confidence = language_confidence(text, exclude_names=known_names)
+        if config.LANGUAGE == "Chinese":
+            # Chinese mode: accept if CJK ratio is non-trivial or any CJK present
+            if confidence["chinese"] >= 0.20:
                 return True
             return self._contains_cjk(text)
-        
-        # English check
-        if confidence["english"] >= get_res_num("lang.confidence_english_min") and \
-           confidence["chinese"] <= get_res_num("lang.confidence_chinese_max_for_english"):
+
+        # English mode: after excluding known character names, check ratios.
+        # Use a relaxed CJK threshold since proper nouns have been stripped.
+        if confidence["english"] >= 0.60 and confidence["chinese"] <= 0.10:
             return True
-        return not self._contains_cjk(text)
+        # Safety net: only fail if there is substantial CJK content remaining
+        # after name exclusion (> 30% suggests real language mixing, not just names).
+        if confidence["chinese"] > 0.30:
+            return False
+        return True
 
     def _enforce_output_language(
         self,
@@ -43,9 +60,10 @@ class WorkflowLanguageMixin:
     ) -> str:
         if self._is_expected_language(text):
             return text
-        confidence = language_confidence(text)
+        known_names = self._get_known_character_names()
+        confidence = language_confidence(text, exclude_names=known_names)
         self.logger.warning(
-            "Language guard triggered for %s (zh=%.3f, en=%.3f)",
+            "Language guard triggered for %s (zh=%.3f, en=%.3f, after name exclusion)",
             role,
             confidence["chinese"],
             confidence["english"],

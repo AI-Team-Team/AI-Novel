@@ -91,8 +91,9 @@ class PipelineIntegrationTests(unittest.TestCase):
             source_commit_id="scan-2",
             intent_tag="scan_extract",
         )
-        self.assertEqual(eid, -1)
-        self.assertEqual(self.mm.get_pending_blocking_conflict_count(), 1)
+        self.assertGreater(eid, 0)  # Event is now inserted (not blocked)
+        self.assertEqual(self.mm.get_pending_blocking_conflict_count(), 0)  # NON_BLOCKING, not BLOCKING
+        self.assertGreaterEqual(self.mm.get_pending_conflict_count(), 1)  # NON_BLOCKING conflict queued
 
         pkg = self.state.build_context_package(
             task_type="planner",

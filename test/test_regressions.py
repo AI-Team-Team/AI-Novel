@@ -194,13 +194,15 @@ class MemoryMergeTests(unittest.TestCase):
         self.assertTrue(any(d["conflict_type"] == "relationship_dead_character_involved" for d in diagnostics))
         self.assertTrue(any(d["blocking_level"] == "NON_BLOCKING" for d in diagnostics))
 
-    def test_strict_rule_contradiction_queues_conflict(self):
+    def test_strict_rule_contradiction_no_longer_blocked_at_memory_layer(self):
+        """Rule contradiction check removed from memory.py — now handled by LLM Critic."""
         self.mm.add_rule("Magic", "No resurrection is allowed.", strictness=1, source="test", chapter_num=1)
-        self.mm.add_rule("Magic", "Resurrection is allowed.", strictness=1, source="test", chapter_num=2)
+        rid = self.mm.add_rule("Magic", "Resurrection is allowed.", strictness=1, source="test", chapter_num=2)
+        self.assertGreater(rid, 0)
         self.mm.cursor.execute("SELECT COUNT(*) FROM world_rules WHERE category = ?", ("Magic",))
         count = self.mm.cursor.fetchone()[0]
-        self.assertEqual(count, 1)
-        self.assertEqual(self.mm.get_pending_conflict_count(), 1)
+        self.assertEqual(count, 2)  # Both rules inserted (semantic contradiction check delegated to Critic)
+        self.assertEqual(self.mm.get_pending_conflict_count(), 0)
 
     def test_timeline_same_key_conflict_is_blocked(self):
         self.mm.add_event(
@@ -228,7 +230,9 @@ class MemoryMergeTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(self.mm.get_pending_conflict_count(), 1)
 
-    def test_event_with_dead_character_is_blocked(self):
+    def test_event_with_dead_character_is_flagged_non_blocking(self):
+        """Events with dead characters are inserted but flagged NON_BLOCKING.
+        Semantic judgment (memorial vs. active) is delegated to the LLM Critic."""
         self.mm.upsert_character(name="Hero", status="dead", source="test", chapter_num=1)
         eid = self.mm.add_event(
             "Hero Returns",
@@ -240,14 +244,18 @@ class MemoryMergeTests(unittest.TestCase):
             source="test",
             chapter_num=2,
         )
-        self.assertEqual(eid, -1)
+        self.assertGreater(eid, 0)  # Event IS inserted
         self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Hero Returns",))
         count = self.mm.cursor.fetchone()[0]
-        self.assertEqual(count, 0)
+        self.assertEqual(count, 1)  # Event exists in DB
         self.assertEqual(self.mm.get_pending_conflict_count(), 1)
-        self.assertEqual(self.mm.get_pending_blocking_conflict_count(), 1)
+        self.assertEqual(self.mm.get_pending_blocking_conflict_count(), 0)  # NON_BLOCKING, not BLOCKING
+        diagnostics = self.mm.get_pending_conflict_diagnostics(limit=10)
+        self.assertTrue(any(d["blocking_level"] == "NON_BLOCKING" for d in diagnostics))
 
-    def test_memorial_event_with_dead_character_is_allowed(self):
+    def test_memorial_event_with_dead_character_also_flagged(self):
+        """Memorial events are also flagged NON_BLOCKING (memorial/active distinction
+        removed from memory.py, delegated to LLM Critic)."""
         self.mm.upsert_character(name="Hero", status="dead", source="test", chapter_num=1)
         eid = self.mm.add_event(
             "Memorial Ceremony",
@@ -263,8 +271,12 @@ class MemoryMergeTests(unittest.TestCase):
         self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Memorial Ceremony",))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)
+        # Now a NON_BLOCKING conflict is queued (Critic will judge if it's truly a problem)
+        self.assertEqual(self.mm.get_pending_conflict_count(), 1)
+        self.assertEqual(self.mm.get_pending_blocking_conflict_count(), 0)
 
-    def test_event_contradicting_strict_rule_is_blocked(self):
+    def test_event_contradicting_strict_rule_no_longer_blocked(self):
+        """Rule contradiction check removed from memory.py — handled by LLM Critic."""
         self.mm.add_rule("Magic", "No resurrection is allowed.", strictness=1, source="test", chapter_num=1)
         eid = self.mm.add_event(
             "Forbidden Ritual",
@@ -276,11 +288,11 @@ class MemoryMergeTests(unittest.TestCase):
             source="test",
             chapter_num=2,
         )
-        self.assertEqual(eid, -1)
+        self.assertGreater(eid, 0)  # Event IS inserted (no rule check at memory layer)
         self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Forbidden Ritual",))
         count = self.mm.cursor.fetchone()[0]
-        self.assertEqual(count, 0)
-        self.assertEqual(self.mm.get_pending_conflict_count(), 1)
+        self.assertEqual(count, 1)
+        self.assertEqual(self.mm.get_pending_conflict_count(), 0)  # No conflict queued at memory layer
 
     def test_pending_conflict_diagnostics_has_labels_and_diff(self):
         self.mm.upsert_character(name="Nina", status="dead", source="test", chapter_num=1)
@@ -1047,6 +1059,175 @@ class ContinuousLoopResumeTests(unittest.TestCase):
         with mock.patch("workflow.time.sleep", return_value=None):
             with self.assertRaises(RuntimeError):
                 wf.run_continuous_loop(1, 1)
+
+class CriticFactReviewTests(unittest.TestCase):
+    """Tests for the LLM Critic batch fact review that replaced the old Arbiter."""
+
+    class _StubCriticClient:
+        def __init__(self, response_json):
+            self.response_json = response_json
+
+        def generate(self, prompt, system_instruction=None, temperature=0.7, require_json=False):
+            return json.dumps(self.response_json)
+
+    def setUp(self):
+        self.db_path = os.path.join(ROOT_DIR, "novel", "process", "test_critic_review.db")
+        self.faiss_path = os.path.join(ROOT_DIR, "novel", "process", "test_critic_review.faiss")
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+        if os.path.exists(self.faiss_path):
+            os.remove(self.faiss_path)
+        self.mm = MemoryManager(self.db_path, self.faiss_path)
+
+    def tearDown(self):
+        self.mm.close()
+
+    def _build_workflow_stub(self, critic_response):
+        wf = WorkflowManager.__new__(WorkflowManager)
+        wf.logger = logging.getLogger("critic-review-test")
+        wf.memory = self.mm
+        wf.state_manager = StoryStateManager(self.mm, embedding_client=None)
+        wf.critic_client = self._StubCriticClient(critic_response)
+        wf._log_llm_interaction = lambda **kwargs: None
+        wf._language_rule = lambda: "Use English only."
+        return wf
+
+    def test_critic_review_removes_blocking_facts(self):
+        self.mm.upsert_character(name="Hero", status="dead", source="test", chapter_num=1)
+        self.mm.add_rule("Magic", "No resurrection allowed.", strictness=1, source="test", chapter_num=1)
+        facts_data = {
+            "new_characters": [],
+            "updated_characters": [{"name": "Hero", "status": "alive"}],
+            "new_rules": [],
+            "relationships": [],
+            "events": [
+                {"event_name": "Hero Revives", "description": "Hero comes back to life.",
+                 "timestamp_str": "Day 5", "impact_level": 5, "related_entities": ["Hero"], "location": "Temple"},
+                {"event_name": "Market Opens", "description": "The market opens at dawn.",
+                 "timestamp_str": "Day 5", "impact_level": 1, "related_entities": [], "location": "Town"},
+            ],
+            "details": [],
+        }
+        critic_response = {
+            "issues": [
+                {"fact_type": "updated_character", "fact_index": 0, "severity": "BLOCKING",
+                 "reason": "Hero is dead but being set to alive without narrative justification."},
+                {"fact_type": "event", "fact_index": 0, "severity": "BLOCKING",
+                 "reason": "Contradicts 'No resurrection allowed' rule."},
+            ]
+        }
+        wf = self._build_workflow_stub(critic_response)
+        result = wf._critic_review_extracted_facts(
+            chapter_num=2, facts_data=facts_data,
+            chapter_text="Hero comes back to life in the temple.",
+            prompts={"critic": "system"},
+        )
+        # BLOCKING facts removed
+        self.assertEqual(len(result["updated_characters"]), 0)
+        self.assertEqual(len(result["events"]), 1)  # Only Market Opens remains
+        self.assertEqual(result["events"][0]["event_name"], "Market Opens")
+        # Conflicts queued
+        conflicts = self.mm.get_pending_conflict_count()
+        self.assertEqual(conflicts, 2)
+
+    def test_critic_review_keeps_non_blocking_facts(self):
+        facts_data = {
+            "new_characters": [],
+            "updated_characters": [],
+            "new_rules": [],
+            "relationships": [{"source": "A", "target": "B", "relation_type": "rivals", "details": "competition"}],
+            "events": [],
+            "details": [],
+        }
+        critic_response = {
+            "issues": [
+                {"fact_type": "relationship", "fact_index": 0, "severity": "NON_BLOCKING",
+                 "reason": "A and B were previously described as friends."},
+            ]
+        }
+        wf = self._build_workflow_stub(critic_response)
+        result = wf._critic_review_extracted_facts(
+            chapter_num=3, facts_data=facts_data,
+            chapter_text="A and B compete fiercely.",
+            prompts={"critic": "system"},
+        )
+        # NON_BLOCKING: fact remains in payload
+        self.assertEqual(len(result["relationships"]), 1)
+        # But conflict is queued
+        self.assertEqual(self.mm.get_pending_conflict_count(), 1)
+        diagnostics = self.mm.get_pending_conflict_diagnostics(limit=10)
+        self.assertEqual(diagnostics[0]["blocking_level"], "NON_BLOCKING")
+
+    def test_critic_review_no_issues_returns_unchanged(self):
+        facts_data = {
+            "new_characters": [{"name": "Alice", "core_traits": {}, "attributes": {}}],
+            "updated_characters": [],
+            "new_rules": [],
+            "relationships": [],
+            "events": [],
+            "details": [],
+        }
+        wf = self._build_workflow_stub({"issues": []})
+        result = wf._critic_review_extracted_facts(
+            chapter_num=1, facts_data=facts_data,
+            chapter_text="Alice enters the story.",
+            prompts={"critic": "system"},
+        )
+        self.assertEqual(len(result["new_characters"]), 1)
+        self.assertEqual(self.mm.get_pending_conflict_count(), 0)
+
+    def test_critic_review_failure_returns_data_unchanged(self):
+        """If Critic LLM call fails, facts pass through unchanged."""
+        facts_data = {
+            "new_characters": [{"name": "Bob"}],
+            "updated_characters": [],
+            "new_rules": [],
+            "relationships": [],
+            "events": [],
+            "details": [],
+        }
+        wf = WorkflowManager.__new__(WorkflowManager)
+        wf.logger = logging.getLogger("critic-review-fail-test")
+        wf.memory = self.mm
+        wf.state_manager = StoryStateManager(self.mm, embedding_client=None)
+        # Critic that raises exception
+        class _FailingClient:
+            def generate(self, *args, **kwargs):
+                raise RuntimeError("LLM unavailable")
+        wf.critic_client = _FailingClient()
+        wf._log_llm_interaction = lambda **kwargs: None
+        wf._language_rule = lambda: "Use English only."
+        result = wf._critic_review_extracted_facts(
+            chapter_num=1, facts_data=facts_data,
+            chapter_text="Bob appears.",
+            prompts={"critic": "system"},
+        )
+        self.assertEqual(len(result["new_characters"]), 1)
+        self.assertEqual(self.mm.get_pending_conflict_count(), 0)
+
+
+class LanguageGuardNameExclusionTests(unittest.TestCase):
+    """Tests for improved language guard that excludes known character names."""
+
+    def test_language_confidence_with_name_exclusion(self):
+        text = "The hero Lin Bai walked through the ancient forest."
+        without_exclusion = language_confidence(text)
+        with_exclusion = language_confidence(text, exclude_names=["\u6797\u767d"])
+        # Without exclusion: if Chinese name was in text it would affect ratio
+        # With exclusion: the name is removed so ratio changes
+        # In this case the text is pure English (Latin chars), so both should be the same
+        self.assertGreater(without_exclusion["english"], 0.9)
+
+    def test_language_confidence_chinese_names_in_english(self):
+        # Simulate English text with Chinese character names
+        text = "The warrior \u82cf\u4e91\u6eaa fought beside \u9648\u660e\u8fdc in the battle."
+        without_exclusion = language_confidence(text)
+        with_exclusion = language_confidence(text, exclude_names=["\u82cf\u4e91\u6eaa", "\u9648\u660e\u8fdc"])
+        # Without exclusion: CJK ratio is elevated
+        self.assertGreater(without_exclusion["chinese"], 0.0)
+        # With exclusion: CJK should be 0 or near 0
+        self.assertLessEqual(with_exclusion["chinese"], 0.01)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,9 +18,10 @@ flowchart TD
     
     Semantic -- "Fetch T3 Lore/Atmosphere" --> Align{4. Cross-Tier Alignment}
     
-    Align -- "Filter: Contradicts T1/T2? (e.g. Dead char action)" --> Rerank[5. Semantic Reranking]
+    Align -- "Strict mode: drop hits mentioning dead characters" --> Rerank["5. Semantic Reranking"]
+    Align -- "Non-strict mode: all hits pass through" --> Rerank
     
-    Rerank -- "Score = Similarity + Token Overlap Bonus" --> Final[Final Context Package]
+    Rerank -- "Score = Similarity + Token Overlap Bonus" --> Final["Final Context Package"]
 ```
 
 ### Reranking Heuristics
@@ -36,22 +37,29 @@ Ensures that "dirty" facts from a bad scan don't corrupt the long-term memory.
 sequenceDiagram
     autonumber
     participant W as WorkflowManager
+    participant C as Critic LLM
     participant M as MemoryManager
     participant DB as SQLite
     participant V as FAISS Index
     participant CQ as Conflict Queue
+
+    W->>W: Scanner extracts JSON + Schema validation
+    W->>C: _critic_review_extracted_facts(facts, DB state)
+    C-->>W: Issues list (BLOCKING/NON_BLOCKING)
+    W->>W: Remove BLOCKING facts from payload
+    W->>CQ: Queue all issues as conflicts
 
     W->>M: begin_batch()
     M->>DB: BEGIN TRANSACTION
     M->>V: faiss.clone_index(current_index)
     Note over M, V: Snapshot created for safety
 
-    W->>M: apply_fact_payload(JSON)
+    W->>M: apply_fact_payload(filtered JSON)
     
     loop Per Fact (Rule/Char/Event)
-        M->>M: Conflict Heuristics Check
-        alt BLOCKING Conflict Found
-            M-->>W: Raise Conflict Exception
+        M->>M: Deterministic checks only
+        alt BLOCKING Conflict (e.g. dead→alive)
+            M->>CQ: Queue conflict
         else Safe or NON_BLOCKING
             M->>DB: Staging write
         end
@@ -62,7 +70,7 @@ sequenceDiagram
         M->>DB: COMMIT
         Note over M, V: Discard Snapshot
         M-->>W: Status: COMPLETED
-    else Error/Blocking
+    else Error
         W->>M: end_batch(success=False)
         M->>DB: ROLLBACK
         M->>V: Restore index from Snapshot
@@ -70,12 +78,21 @@ sequenceDiagram
     end
 ```
 
-## 3. Conflict Detection Heuristics
+## 3. Conflict Detection
 
-The system doesn't just match keywords; it checks for semantic contradictions:
+Conflict detection uses a two-layer approach:
 
-* **Character Status Guard**: Blocks "Resurrection" (Dead -> Alive) or changing core identities.
-* **Rule Contradiction**:
-  * **Negation Detection**: Matches "never/no/not" against positive counterparts.
-  * **Polarity Mapping**: Detects antonym pairs (e.g., "forbidden" vs "allowed").
-* **Weighted Overlap**: Uses a custom weight table (e.g., "kill", "die", "death" have high weights) to detect critical timeline clashes.
+### Layer 1: Deterministic Checks (memory.py)
+
+* **Character Status Guard**: Blocks dead→alive status change (`BLOCKING`). Protects immutable identity fields.
+* **Timeline Dead Character Flag**: Events mentioning dead characters are inserted but flagged `NON_BLOCKING` for Critic review.
+* **Exact Deduplication**: Rules and events with identical payloads return existing ID without re-insert.
+* **Relationship Type Change**: Queued as `NON_BLOCKING` conflict, existing type preserved.
+
+### Layer 2: LLM Critic Review (workflow.py)
+
+Performed before DB commit via `_critic_review_extracted_facts()`:
+
+* **Input**: Extracted facts + DB state snapshot (characters, strict rules, recent events) + chapter text.
+* **Detection**: Semantic/logical contradictions (strict rule violations, causal impossibilities, dead character active participation vs memorial).
+* **Output**: `BLOCKING` facts removed from payload; `NON_BLOCKING` facts kept; all issues queued as conflicts.

@@ -8,42 +8,101 @@ When starting with `--auto`, the system performs an exhaustive integrity check r
 
 ```mermaid
 flowchart TD
-    Start[--auto START COUNT] --> Loop[For each Chapter N in range]
+    Start["--auto START COUNT"] --> Loop["For each Chapter N in range"]
     
-    Loop --> ValPhys{1. Physical Validation}
-    ValPhys -- "File missing OR empty" --> Discard[Mark for Regeneration]
+    Loop --> ValPhys{"1. Physical Validation"}
+    ValPhys -- "File missing OR empty" --> Discard["Mark for Regeneration"]
     
-    ValPhys -- "Files OK" --> ValSchema{2. Content Validation}
+    ValPhys -- "Files OK" --> ValSchema{"2. Content Validation"}
     ValSchema -- "Fact JSON schema invalid" --> Discard
     ValSchema -- "Discussion JSONL corrupted" --> Discard
     
-    ValSchema -- "Content OK" --> ValDB{3. DB State Validation}
+    ValSchema -- "Content OK" --> ValDB{"3. DB State Validation"}
     ValDB -- "Commit status != COMPLETED" --> Discard
     ValDB -- "Commit payload missing" --> Discard
     
-    ValDB -- "Status COMPLETED" --> Skip[Already Done: Skip Chapter N]
+    ValDB -- "Status COMPLETED" --> Skip["Already Done: Skip Chapter N"]
     
-    Discard --> Clean[Purge DB incomplete commits + Delete partial files]
-    Clean --> Regen[Start Generation Loop for Chapter N]
+    Discard --> Clean["Purge DB incomplete commits + Delete partial files"]
+    Clean --> Regen["Start Generation Loop for Chapter N"]
     
-    Regen --> Next[Chapter N + 1]
+    Regen --> Next["Chapter N + 1"]
     Skip --> Next
 ```
 
-## 2. Conflict Triage State Machine
+## 2. Two-Layer Conflict Detection
+
+Conflict detection uses a two-layer architecture to balance efficiency with accuracy.
+
+### Layer 1: Deterministic Checks (memory.py)
+
+Performed during data insertion. Catches exact-match contradictions:
+
+```mermaid
+flowchart TD
+    Insert["Incoming Fact"] --> TypeCheck{"Fact Type?"}
+    
+    TypeCheck -- "Character Update" --> StatusCheck{"Status dead→alive?"}
+    StatusCheck -- "Yes" --> BlockChar["BLOCKING: status_dead_to_alive"]
+    StatusCheck -- "No" --> IdentityCheck{"Identity field change?"}
+    IdentityCheck -- "Yes" --> BlockIdent["BLOCKING: identity_field_conflict"]
+    IdentityCheck -- "No" --> DeepMerge["Deep Merge & Insert"]
+    
+    TypeCheck -- "Event" --> DeadRef{"References dead character?"}
+    DeadRef -- "Yes" --> FlagNB["NON_BLOCKING: timeline_dead_character_involved"]
+    FlagNB --> InsertEvent["Insert event (not blocked)"]
+    DeadRef -- "No" --> DedupEvent{"Exact duplicate?"}
+    DedupEvent -- "Yes" --> SkipEvent["Skip (return existing ID)"]
+    DedupEvent -- "No" --> InsertEvent
+
+    TypeCheck -- "Rule" --> DedupRule{"Exact duplicate?"}
+    DedupRule -- "Yes" --> SkipRule["Skip (return existing ID)"]
+    DedupRule -- "No" --> InsertRule["Insert rule"]
+
+    TypeCheck -- "Relationship" --> RelCheck{"Type changed?"}
+    RelCheck -- "Yes" --> FlagRelNB["NON_BLOCKING: relationship_type_change"]
+    FlagRelNB --> KeepRel["Keep existing type"]
+    RelCheck -- "No" --> UpsertRel["Upsert relationship"]
+```
+
+### Layer 2: LLM Critic Review (workflow.py)
+
+Performed before DB commit in `scan_chapter()`. Catches semantic/logical contradictions:
+
+```mermaid
+flowchart TD
+    Scanner["Scanner JSON (validated)"] --> Snapshot["Build DB State Snapshot"]
+    Snapshot --> CriticCall["LLM Critic: batch review all facts vs state"]
+    
+    CriticCall -- "LLM fails" --> Passthrough["Facts pass through unchanged"]
+    CriticCall -- "Issues found" --> Classify{"Classify each issue"}
+    CriticCall -- "No issues" --> Passthrough
+    
+    Classify -- "BLOCKING" --> Remove["Remove fact from payload"]
+    Remove --> QueueBlock["Queue BLOCKING conflict"]
+    
+    Classify -- "NON_BLOCKING" --> Keep["Keep fact in payload"]
+    Keep --> QueueNB["Queue NON_BLOCKING conflict"]
+    
+    QueueBlock --> Commit["Proceed to DB commit with filtered payload"]
+    QueueNB --> Commit
+    Passthrough --> Commit
+```
+
+## 3. Conflict Triage State Machine
 
 Conflicts are classified to balance automation with narrative safety.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> BLOCKING: Contradiction (Hard)
-    [*] --> NON_BLOCKING: Contradiction (Soft)
+    [*] --> BLOCKING: Deterministic or Critic BLOCKING
+    [*] --> NON_BLOCKING: Deterministic or Critic NON_BLOCKING
     
     state BLOCKING {
         direction TB
         B_Queued: Queued in DB
-        B_Rollback: Atomic Rollback Triggered
-        B_Queued --> B_Rollback
+        B_Gate: Workflow gate check
+        B_Queued --> B_Gate
     }
 
     state NON_BLOCKING {
@@ -65,7 +124,7 @@ stateDiagram-v2
     }
 ```
 
-## 3. Runtime Integrity Rules
+## 4. Runtime Integrity Rules
 
 * **Critical Globals**: `world_bible.md`, `plot_outline.md`, and `detailed_plot_outline.md` must be valid. If missing or corrupted, the system fails fast and requests `--start` again.
 * **Chapter Artifacts**: If *any* artifact of a chapter (Guide, Text, Facts, Review) is missing or invalid, the entire chapter is treated as incomplete.

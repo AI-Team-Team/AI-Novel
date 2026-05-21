@@ -17,6 +17,6 @@
   "prompt.scanner_task": "现在提取事实 (JSON)。",
   "prompt.intent_rationale_conflict": "存在待处理冲突，优先检索冲突相关上下文。",
   "prompt.intent_rationale_continuity": "按角色/事件连续性检索三级细节。",
-  "prompt.arbiter_task": "你是一个剧情合理性仲裁者。请判断以下角色状态或关系的改变，是“合理的剧情发展”还是“设定漏洞/矛盾”。例如：从“朋友”变为“恋人”或“仇人”属于合理发展，从“死者”毫无解释地变为“活人”属于漏洞。",
-  "prompt.arbiter_format": "请严格输出 JSON 格式：{\"is_conflict\": true/false, \"reason\": \"...\"}。如果判定为合理的剧情推进，is_conflict 必须为 false。"
+  "prompt.critic_fact_review_task": "你是故事一致性审查员。请对照已确立的故事状态，审查以下从章节中提取的事实。对每条事实判断其是否与已有设定一致，或是否引入了矛盾。重点关注：(1) 已死亡角色以存活/活跃状态出现（追悼/回忆提及可接受）。(2) 违反严格世界规则。(3) 逻辑/因果上的不可能（如已毁物品重新出现、角色同时在两地）。(4) 与已确立身份矛盾的角色状态变更。仅输出你发现的问题——不要列出一致的事实。",
+  "prompt.critic_fact_review_format": "请严格输出 JSON：{\"issues\": [{\"fact_type\": \"event|character|rule|relationship\", \"fact_index\": 0, \"severity\": \"BLOCKING|NON_BLOCKING\", \"reason\": \"...\"}]}。如无问题，输出：{\"issues\": []}。BLOCKING = 真正的矛盾，不得写入数据库。NON_BLOCKING = 可能不一致但可能是合理的剧情发展。"
 }

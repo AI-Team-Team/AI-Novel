@@ -236,10 +236,17 @@ class StoryStateManager:
         db_chars: List[tuple],
         strict_mode: bool,
     ) -> List[Dict]:
+        """Filter semantic hits that mention dead characters in strict mode.
+
+        In non-strict mode all hits pass through — nuanced memorial/active
+        classification is left to the LLM Critic rather than keyword heuristics.
+        """
         if not hits:
             return []
         dead_entities = {name for name, _, status in db_chars if status == "dead"}
         if not dead_entities:
+            return hits
+        if not strict_mode:
             return hits
         aligned: List[Dict] = []
         for hit in hits:
@@ -247,11 +254,7 @@ class StoryStateManager:
             lowered = content.lower()
             blocked = False
             for dead_name in dead_entities:
-                if not self._contains_token(lowered, dead_name.lower()):
-                    continue
-                if self.memory._event_is_historical_or_memorial(content):
-                    continue
-                if strict_mode or self.memory._event_implies_active_participation(content):
+                if self._contains_token(lowered, dead_name.lower()):
                     blocked = True
                     break
             if not blocked:

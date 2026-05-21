@@ -5,8 +5,12 @@ from typing import Dict, List, Optional
 def contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
-def language_confidence(text: str) -> Dict[str, float]:
+def language_confidence(text: str, exclude_names: Optional[List[str]] = None) -> Dict[str, float]:
     sample = text or ""
+    if exclude_names:
+        for name in exclude_names:
+            if name:
+                sample = sample.replace(name, "")
     cjk_count = len(re.findall(r"[\u4e00-\u9fff]", sample))
     latin_count = len(re.findall(r"[A-Za-z]", sample))
     alpha_total = cjk_count + latin_count
@@ -25,6 +29,7 @@ def language_confidence(text: str) -> Dict[str, float]:
         "cjk_ratio": cjk_ratio,
         "latin_ratio": latin_ratio,
     }
+
 
 def needs_revision(review_text: str) -> bool:
     if not review_text:

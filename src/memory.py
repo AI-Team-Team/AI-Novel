@@ -143,124 +143,12 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]+", normalized)
         return set(tokens)
 
-    @staticmethod
-    def _weighted_overlap_score(a_tokens: set, b_tokens: set) -> float:
-        if not a_tokens or not b_tokens:
-            return 0.0
-        domain_weight = {
-            "resurrection": 2.4,
-            "revive": 2.2,
-            "alive": 2.0,
-            "dead": 2.0,
-            "death": 1.8,
-            "forbid": 2.0,
-            "forbidden": 2.0,
-            "allow": 2.0,
-            "allowed": 2.0,
-            "禁止": 2.0,
-            "允许": 2.0,
-            "复活": 2.6,
-            "死亡": 2.0,
-            "活着": 2.0,
-            "不可": 1.8,
-            "可以": 1.8,
-        }
-
-        union = a_tokens | b_tokens
-        overlap = a_tokens & b_tokens
-        union_weight = sum(domain_weight.get(t, 1.0) for t in union)
-        overlap_weight = sum(domain_weight.get(t, 1.0) for t in overlap)
-        return overlap_weight / max(1e-9, union_weight)
-
-    @staticmethod
-    def _is_negation_text(text: str) -> bool:
-        normalized = MemoryManager._normalize_text(text)
-        zh_markers = ["不", "禁止", "不可", "不能", "无", "不得"]
-        en_markers = [" no ", " not ", " never ", " forbid ", " cannot ", " can't "]
-        if any(marker in normalized for marker in zh_markers):
-            return True
-        padded = f" {normalized} "
-        return any(marker in padded for marker in en_markers)
-
-    @staticmethod
-    def _polarity_score(text: str) -> int:
-        normalized = MemoryManager._normalize_text(text)
-        positive_markers = [
-            "allow", "allowed", "can", "permitted", "enable", "enabled", "可以", "允许", "能够",
-        ]
-        negative_markers = [
-            "forbid", "forbidden", "cannot", "can't", "never", "disallow", "ban", "banned",
-            "禁止", "不得", "不能", "不可",
-        ]
-        score = 0
-        for marker in positive_markers:
-            if marker in normalized:
-                score += 1
-        for marker in negative_markers:
-            if marker in normalized:
-                score -= 1
-        return score
-
-    @staticmethod
-    def _has_antonym_pair(a: str, b: str) -> bool:
-        pairs = [
-            ("alive", "dead"),
-            ("life", "death"),
-            ("allow", "forbid"),
-            ("allowed", "forbidden"),
-            ("permit", "ban"),
-            ("resurrection", "no resurrection"),
-            ("可以", "禁止"),
-            ("允许", "禁止"),
-            ("活着", "死亡"),
-            ("复活", "不可复活"),
-        ]
-        for x, y in pairs:
-            if (x in a and y in b) or (y in a and x in b):
-                return True
-        return False
-
-    @staticmethod
-    def _event_implies_active_participation(text: str) -> bool:
-        normalized = MemoryManager._normalize_text(text)
-        markers = [
-            "returns", "appears", "talks", "fights", "arrives", "joins", "speaks", "wakes",
-            "归来", "出现", "说话", "战斗", "到达", "参加", "苏醒", "复活",
-        ]
-        return any(marker in normalized for marker in markers)
-
-    @staticmethod
-    def _event_is_historical_or_memorial(text: str) -> bool:
-        normalized = MemoryManager._normalize_text(text)
-        markers = [
-            "flashback", "memory", "memorial", "funeral", "grave", "past", "history",
-            "回忆", "追悼", "葬礼", "墓", "往事", "史料", "纪念",
-        ]
-        return any(marker in normalized for marker in markers)
-
-    @staticmethod
-    def _rule_maybe_contradict(existing_rule: str, incoming_rule: str) -> bool:
-        a = MemoryManager._normalize_text(existing_rule)
-        b = MemoryManager._normalize_text(incoming_rule)
-        if not a or not b or a == b:
-            return False
-        a_tokens = MemoryManager._tokenize_text(a)
-        b_tokens = MemoryManager._tokenize_text(b)
-        if not a_tokens or not b_tokens:
-            return False
-        overlap = MemoryManager._weighted_overlap_score(a_tokens, b_tokens)
-        if overlap < 0.12:
-            return False
-
-        if MemoryManager._has_antonym_pair(a, b):
-            return True
-
-        polarity_a = MemoryManager._polarity_score(a)
-        polarity_b = MemoryManager._polarity_score(b)
-        if polarity_a * polarity_b < 0 and overlap >= 0.18:
-            return True
-
-        return MemoryManager._is_negation_text(a) != MemoryManager._is_negation_text(b) and overlap >= 0.2
+    # NOTE: Heuristic conflict detection functions (_weighted_overlap_score,
+    # _is_negation_text, _polarity_score, _has_antonym_pair, _rule_maybe_contradict,
+    # _event_implies_active_participation, _event_is_historical_or_memorial) have been
+    # removed. Fuzzy/semantic contradiction detection is now handled by the LLM Critic
+    # in the workflow layer (see workflow.py _critic_review_extracted_facts).
+    # Only deterministic checks remain in this module (dead->alive, identity fields, exact dedup).
 
     @staticmethod
     def _row_to_character_dict(row: tuple) -> Dict:
@@ -536,36 +424,9 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         normalized_intent = (intent_tag or "").strip()
         if not normalized_content:
             return -1
-        self.cursor.execute(
-            """SELECT id, category, rule_content, strictness
-               FROM world_rules
-               WHERE category = ? AND strictness = 1 AND is_deleted = 0""",
-            (normalized_category,),
-        )
-        strict_rows = self.cursor.fetchall()
-        for strict_row in strict_rows:
-            existing_id, _, existing_content, _ = strict_row
-            if self._rule_maybe_contradict(existing_content or "", normalized_content):
-                self.queue_conflict(
-                    entity_type="world_rule",
-                    entity_key=f"{normalized_category}:{existing_id}",
-                    conflict_type="strict_rule_contradiction",
-                    incoming_obj={
-                        "category": normalized_category,
-                        "content": normalized_content,
-                        "strictness": strictness,
-                    },
-                    existing_obj={
-                        "id": existing_id,
-                        "category": normalized_category,
-                        "content": existing_content,
-                        "strictness": 1,
-                    },
-                    source=source,
-                    chapter_num=chapter_num,
-                    notes="Blocked insertion due to potential contradiction with strict rule.",
-                )
-                return int(existing_id)
+        # NOTE: Heuristic rule contradiction checks have been removed from this layer.
+        # Semantic contradiction detection between rules is now handled by the LLM Critic
+        # in the workflow layer before facts are committed to the database.
 
         self.cursor.execute(
             """SELECT id, category, rule_content, strictness
@@ -633,78 +494,37 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         normalized_related_entities = [str(x).strip() for x in (related_entities or []) if str(x).strip()]
         entities_json = json.dumps(normalized_related_entities, ensure_ascii=False, sort_keys=True)
 
-        # Causality guard 1: dead characters should not silently participate in new events.
+        # Deterministic guard: flag events that reference dead characters.
+        # The event is still inserted (not blocked) — semantic judgment about whether
+        # this is a genuine contradiction vs. memorial/flashback is delegated to the
+        # LLM Critic in the workflow layer.
         dead_entities = []
         for entity in normalized_related_entities:
             char = self.get_character(entity)
             if char and char[3] == "dead":
                 dead_entities.append(entity)
         if dead_entities:
-            event_payload_text = f"{normalized_event_name}. {normalized_description}"
-            active_participation = self._event_implies_active_participation(event_payload_text)
-            historical_context = self._event_is_historical_or_memorial(event_payload_text)
-            # Allow memorial/flashback style events that mention dead characters without implying revival.
-            if historical_context and not active_participation:
-                dead_entities = []
-            else:
-                self.queue_conflict(
-                    entity_type="timeline_event",
-                    entity_key=f"{normalized_event_name}@{normalized_timestamp}",
-                    conflict_type="timeline_dead_character_involved",
-                    incoming_obj={
-                        "event_name": normalized_event_name,
-                        "description": normalized_description,
-                        "timestamp_str": normalized_timestamp,
-                        "related_entities": normalized_related_entities,
-                        "location": normalized_location,
-                    },
-                    existing_obj={
-                        "dead_entities": dead_entities,
-                        "active_participation": active_participation,
-                        "historical_context": historical_context,
-                    },
-                    source=source,
-                    chapter_num=chapter_num,
-                    notes=(
-                        "Blocked event insertion because dead character appears as active participant."
-                        if active_participation
-                        else "Blocked event insertion because dead character appears in event without clear historical context."
-                    ),
-                    blocking_level=self.BLOCKING,
-                )
-                return -1
+            self.queue_conflict(
+                entity_type="timeline_event",
+                entity_key=f"{normalized_event_name}@{normalized_timestamp}",
+                conflict_type="timeline_dead_character_involved",
+                incoming_obj={
+                    "event_name": normalized_event_name,
+                    "description": normalized_description,
+                    "timestamp_str": normalized_timestamp,
+                    "related_entities": normalized_related_entities,
+                    "location": normalized_location,
+                },
+                existing_obj={"dead_entities": dead_entities},
+                source=source,
+                chapter_num=chapter_num,
+                notes="Event references dead character(s). Flagged for review.",
+                blocking_level=self.NON_BLOCKING,
+            )
 
-        # Causality guard 2: strict world rules contradiction check against event payload.
-        self.cursor.execute(
-            """SELECT id, category, rule_content
-               FROM world_rules
-               WHERE strictness = 1"""
-        )
-        strict_rules = self.cursor.fetchall()
-        incoming_event_text = f"{normalized_event_name}. {normalized_description}".strip()
-        for rid, rcat, rcontent in strict_rules:
-            if self._rule_maybe_contradict(rcontent or "", incoming_event_text):
-                self.queue_conflict(
-                    entity_type="timeline_event",
-                    entity_key=f"{normalized_event_name}@{normalized_timestamp}",
-                    conflict_type="timeline_rule_contradiction",
-                    incoming_obj={
-                        "event_name": normalized_event_name,
-                        "description": normalized_description,
-                        "timestamp_str": normalized_timestamp,
-                        "related_entities": normalized_related_entities,
-                        "location": normalized_location,
-                    },
-                    existing_obj={
-                        "rule_id": rid,
-                        "category": rcat,
-                        "rule_content": rcontent,
-                    },
-                    source=source,
-                    chapter_num=chapter_num,
-                    notes="Blocked event insertion due to potential contradiction with strict world rule.",
-                )
-                return -1
+        # NOTE: Strict world rule contradiction checks have been removed from this layer.
+        # Semantic contradiction detection is now handled by the LLM Critic in the
+        # workflow layer before facts are committed to the database.
 
         self.cursor.execute(
             """SELECT id

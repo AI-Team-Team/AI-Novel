@@ -214,6 +214,142 @@ class WorkflowManager(WorkflowResumeMixin, WorkflowIOMixin, WorkflowLanguageMixi
     def _validate_fact_payload(data: Dict) -> List[str]:
         return validate_fact_payload(data)
 
+    def _critic_review_extracted_facts(
+        self,
+        chapter_num: int,
+        facts_data: Dict,
+        chapter_text: str,
+        prompts: Dict[str, str],
+    ) -> Dict:
+        """LLM Critic reviews extracted facts for contradictions before DB commit.
+
+        Returns the (possibly filtered) facts_data dict.  BLOCKING issues cause
+        the offending facts to be removed from the payload and queued as conflicts.
+        NON_BLOCKING issues are queued as conflicts but the facts remain.
+        """
+        # Build a state snapshot for the Critic
+        snapshot = self.state_manager.get_state_snapshot(recent_events_limit=10, conflicts_limit=20)
+        db_chars = snapshot["characters"]
+        db_rules = snapshot["rules"]
+        db_events = snapshot["events"]
+
+        char_lines = []
+        for c in db_chars:
+            char_lines.append(f"- {c[0]} (status: {c[2]})")
+        rule_lines = []
+        for r in db_rules:
+            rule_lines.append(f"- [{r[0]}] {r[1]} (strictness: {r[2]})")
+        event_lines = []
+        for e in db_events:
+            event_lines.append(f"- {e[1]}: {e[2]} (location: {e[6]})")
+
+        review_task = get_resource("prompt.critic_fact_review_task")
+        review_format = get_resource("prompt.critic_fact_review_format")
+        review_prompt = (
+            f"## Current Story State\n\n"
+            f"### Characters\n{'\n'.join(char_lines) if char_lines else '(none)'}\n\n"
+            f"### Strict World Rules\n{'\n'.join(rule_lines) if rule_lines else '(none)'}\n\n"
+            f"### Recent Events\n{'\n'.join(event_lines) if event_lines else '(none)'}\n\n"
+            f"## Extracted Facts (Chapter {chapter_num})\n"
+            f"```json\n{json.dumps(facts_data, indent=2, ensure_ascii=False)}\n```\n\n"
+            f"## Chapter Text\n{chapter_text}\n\n"
+            f"{review_task}\n\n{review_format}\n{self._language_rule()}"
+        )
+
+        try:
+            response = self.critic_client.generate(
+                prompt=review_prompt,
+                system_instruction=prompts["critic"],
+                require_json=True,
+            )
+            self._log_llm_interaction(
+                role="Critic",
+                phase=f"Chapter {self._num3(chapter_num)} Fact Review",
+                prompt=review_prompt,
+                response=response,
+                system_instruction=prompts["critic"],
+                chapter_num=chapter_num,
+            )
+            review_result = json.loads(response)
+        except Exception as err:
+            self.logger.warning(f"Critic fact review failed, proceeding without review: {err}")
+            return facts_data
+
+        issues = review_result.get("issues", [])
+        if not issues:
+            self.logger.info("Critic fact review: no issues found.")
+            return facts_data
+
+        # Map fact_type to payload keys
+        type_to_key = {
+            "character": None,  # handled separately for new/updated
+            "new_character": "new_characters",
+            "updated_character": "updated_characters",
+            "event": "events",
+            "rule": "new_rules",
+            "relationship": "relationships",
+            "detail": "details",
+        }
+
+        # Collect indices to remove for BLOCKING issues
+        blocking_removals: Dict[str, set] = {}
+        for issue in issues:
+            fact_type = issue.get("fact_type", "")
+            fact_index = issue.get("fact_index", -1)
+            severity = issue.get("severity", "NON_BLOCKING")
+            reason = issue.get("reason", "")
+
+            # Resolve the payload key
+            payload_key = type_to_key.get(fact_type)
+            if payload_key is None and fact_type == "character":
+                # Critic may use generic "character" — check both lists
+                if fact_index < len(facts_data.get("new_characters", [])):
+                    payload_key = "new_characters"
+                else:
+                    adjusted = fact_index - len(facts_data.get("new_characters", []))
+                    if adjusted >= 0 and adjusted < len(facts_data.get("updated_characters", [])):
+                        payload_key = "updated_characters"
+                        fact_index = adjusted
+
+            # Queue the conflict
+            entity_key = f"critic_review:ch{chapter_num}:{fact_type}:{fact_index}"
+            incoming_obj = {}
+            if payload_key and 0 <= fact_index < len(facts_data.get(payload_key, [])):
+                incoming_obj = facts_data[payload_key][fact_index]
+
+            self.memory.queue_conflict(
+                entity_type=fact_type,
+                entity_key=entity_key,
+                conflict_type=f"critic_detected:{severity.lower()}",
+                incoming_obj=incoming_obj,
+                existing_obj={"reason": reason, "severity": severity},
+                source="critic_fact_review",
+                chapter_num=chapter_num,
+                notes=f"Critic review: {reason}",
+                blocking_level=(
+                    self.memory.BLOCKING if severity == "BLOCKING" else self.memory.NON_BLOCKING
+                ),
+            )
+            self.logger.info(
+                "Critic flagged %s issue: %s[%d] — %s",
+                severity, fact_type, fact_index, reason,
+            )
+
+            # Mark BLOCKING facts for removal
+            if severity == "BLOCKING" and payload_key:
+                blocking_removals.setdefault(payload_key, set()).add(fact_index)
+
+        # Remove BLOCKING facts from payload (iterate in reverse to preserve indices)
+        for key, indices in blocking_removals.items():
+            original = facts_data.get(key, [])
+            facts_data[key] = [
+                item for i, item in enumerate(original) if i not in indices
+            ]
+            removed_count = len(indices)
+            self.logger.info("Removed %d BLOCKING %s from payload.", removed_count, key)
+
+        return facts_data
+
     def _apply_fact_payload(
         self,
         data: Dict,
@@ -1058,6 +1194,17 @@ class WorkflowManager(WorkflowResumeMixin, WorkflowIOMixin, WorkflowLanguageMixi
                 self.facts_dir,
             )
             raise RuntimeError("Scanner payload failed schema validation.")
+
+        # Critic pre-review: LLM-based contradiction detection before DB commit.
+        # BLOCKING issues are removed from the payload; NON_BLOCKING issues are
+        # queued as conflicts but facts are kept.
+        data = self._critic_review_extracted_facts(
+            chapter_num=chapter_num,
+            facts_data=data,
+            chapter_text=chapter_text,
+            prompts=prompts,
+        )
+
         commit_id = self.memory.begin_chapter_commit(chapter_num, source="scan_chapter", payload=data)
         try:
             self.memory.begin_batch()
@@ -1080,29 +1227,6 @@ class WorkflowManager(WorkflowResumeMixin, WorkflowIOMixin, WorkflowLanguageMixi
                 error_message=str(e),
             )
             raise
-
-        if new_conflicts > 0:
-            pending = self.memory.get_pending_conflicts(limit=100)
-            chapter_conflicts = [c for c in pending if c[5] == chapter_num]
-            for c in chapter_conflicts:
-                c_id = c[0]
-                conflict_type = c[3]
-                if conflict_type in ["relationship_type_change", "status_dead_to_alive"]:
-                    diag = self.memory.get_conflict_by_id(c_id)
-                    if not diag: continue
-                    arbiter_prompt = f"{get_resource('prompt.arbiter_task')}\n\nChapter Context:\n{chapter_text}\n\nExisting State:\n{diag[5]}\n\nNew State:\n{diag[4]}\n\n{get_resource('prompt.arbiter_format')}"
-                    try:
-                        response = self.critic_client.generate(
-                            prompt=arbiter_prompt,
-                            system_instruction="You are a strict plot continuity AI.",
-                            require_json=True
-                        )
-                        res_json = json.loads(response)
-                        if not res_json.get("is_conflict", True):
-                            self.memory.resolve_conflict(c_id, "apply_incoming", f"LLM Arbiter: {res_json.get('reason', 'Reasonable progression')}", source="llm_arbiter")
-                            self.logger.info(f"LLM Arbiter auto-resolved conflict {c_id} as non-conflict.")
-                    except Exception as err:
-                        self.logger.warning(f"Conflict arbiter failed for {c_id}: {err}")
 
         summary_lines.append(get_resource("label.commit_id", commit_id=commit_id))
 

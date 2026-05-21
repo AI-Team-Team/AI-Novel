@@ -103,9 +103,17 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
   * Ensures `schema_meta`.
   * Applies versioned migrations sequentially.
 
-**Current conflict rule implemented:**
+**Deterministic conflict rules in `MemoryManager`:**
 
-* Character status `dead -> alive` is treated as hard conflict and queued, not auto-overwritten.
+* Character status `dead -> alive` → `BLOCKING` (queued, not auto-overwritten).
+* Identity field change → `BLOCKING`.
+* Duplicate event key → `BLOCKING`.
+* Event references dead character → `NON_BLOCKING` (event still inserted; flagged for Critic review).
+* Relationship type change → `NON_BLOCKING` (existing type preserved).
+* Relationship with dead character → `NON_BLOCKING`.
+* Exact deduplication for rules and events (returns existing ID).
+
+**Note:** Heuristic keyword-based contradiction detection (`_weighted_overlap_score`, `_rule_maybe_contradict`, etc.) has been removed. Semantic/logical contradiction detection is now handled by the LLM Critic in `workflow.py`.
 
 **Tier 3 Operations (Semantic):**
 
@@ -168,11 +176,11 @@ Orchestrates the multi-agent process.
   * **Phase 6 (Scan):** Extracts facts from the generated text.
   * **Closed Loop:** Expects **JSON** output from the LLM.
   * Runs payload schema validation before any DB writes; invalid payloads are saved and rejected.
+  * **Critic Fact Review:** After validation, all extracted facts are reviewed by the LLM Critic against current DB state via `_critic_review_extracted_facts()`. BLOCKING contradictions are removed from the payload; NON_BLOCKING issues are queued but facts are kept.
   * Automatically parses the JSON and calls `MemoryManager` to:
     * Add/Update Characters (SQLite).
     * Add Timeline Events (SQLite).
     * Add Semantic Details (FAISS).
-  * **LLM Arbiter (New):** After initial database updates, the system scans for pending conflicts (e.g., `relationship_type_change`). It passes the chapter text and conflicting states to the Critic client (acting as Arbiter) to determine if the change is a "reasonable plot progression." If so, the conflict is auto-resolved.
   * Returns a text summary of the updates.
   * Saves `chapter_{n}_facts_summary.md` for chapter-to-chapter continuity.
 * `review_revise_and_scan(chapter_num: int, guide_content: str, chapter_text: str) -> str`
@@ -186,6 +194,12 @@ Orchestrates the multi-agent process.
   * Lists failed commit batches.
 * `replay_chapter_commit(commit_id: str) -> bool`
   * Replays one failed commit from `chapter_commits.payload_json`.
+* `_critic_review_extracted_facts(chapter_num: int, facts_data: Dict, chapter_text: str, prompts: Dict) -> Dict`
+  * LLM Critic batch reviews all extracted facts against current DB state before commit.
+  * Builds a state snapshot (characters, strict rules, recent events) and sends to Critic with the facts payload.
+  * `BLOCKING` issues: facts removed from payload, conflicts queued.
+  * `NON_BLOCKING` issues: facts kept, conflicts queued as advisory.
+  * Graceful degradation: if Critic call fails, returns facts unchanged.
 * `batch_triage_non_blocking(limit: int = 50, note: str = ...) -> int`
   * Batch-resolves NON_BLOCKING conflicts via `keep_existing`.
 * `rebuild_vector_index() -> Dict[str, int]`
