@@ -7,7 +7,7 @@
 # The system supports the native Gemini API, but it's unstable.
 # We suggest using Gemini's OpenAI-compatible API instead,
 # Base URL: https://generativelanguage.googleapis.com/v1beta/openai/
-my_gemini:
+gemini:
   model_type: "llm"
   api_type: "gemini"
   api_key: "${GEMINI_API_KEY}"

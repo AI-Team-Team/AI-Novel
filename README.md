@@ -7,6 +7,10 @@ Many thanks to Gemini and GPT for their help!
 > [!NOTE]
 > The project is currently in a very early stage.
 
+> [!TIP]
+> If you notice any issues or have any suggestions and have the time, \
+> please leave them in the Issues section. Thank you.
+
 [👉 Project Architecture](docs/Architecture.md) | [👉 Flowchart](docs/Flowchart/README.md) | [👉 User Guide](docs/User_Guide.md) | [👉 Documents](docs/)
 
 ## Key Features
@@ -68,7 +72,3 @@ python src/main.py --start
 # Generate 5 chapters starting from Chapter 1
 python src/main.py --auto 1 5
 ```
-
-## GPU Acceleration & Model Configuration
-
-The system now supports separating the **Generation Model** from the **Embedding Model** for optimal local performance.
