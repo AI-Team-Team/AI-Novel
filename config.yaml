@@ -1,51 +1,19 @@
-# =============================
-# Generation Model Configuration
-# =============================
+# ==========================================
+# Agent Role-to-Model Assignment Map
+# ==========================================
 models:
-  # Options: "gemini", "openai"
-  primary_type: "openai"
-  architect_type: "openai"
-  planner_type: "openai"
-  writer_type: "openai"
-  critic_type: "openai"
-  scanner_type: "openai"
+  # Key references from config/ai_model_config.yaml
+  default_model: "gemini"
+  architect_model: "local-AI"
+  planner_model: "gemini"
+  writer_model: "local-AI"
+  critic_model: "gemini"
+  scanner_model: "local-AI"
+  embedding_model: "emb"
 
-# Gemini settings (generation)
-gemini:
-  api_key: "YOUR_API_KEY_HERE"  # Can be overridden by GEMINI_API_KEY environment variable
-  default_model: "gemini-3-flash"
-  architect_model: "gemini-3-flash"
-  planner_model: "gemini-3-flash"
-  writer_model: "gemini-3-flash"
-  critic_model: "gemini-3-flash"
-  scanner_model: "gemini-3-flash"
-
-# OpenAI-compatible settings (generation), e.g. LM Studio / llama.cpp / vLLM
-openai:
-  api_key: ""  # Can be overridden by OPENAI_API_KEY environment variable
-  base_url: "http://localhost:----/v1"  # Can be overridden by OPENAI_BASE_URL environment variable
-  default_model: "local-model"
-  architect_model: "local-model"
-  planner_model: "local-model"
-  writer_model: "local-model"
-  critic_model: "local-model"
-  scanner_model: "local-model"
-
-# =============================
-# Embedding Configuration
-# =============================
-embedding:
-  # Options: "gemini", "openai"
-  provider: "openai"
-  base_url: "http://localhost:----/v1"  # Can be overridden by EMBEDDING_BASE_URL env var
-  api_key: ""  # Can be overridden by EMBEDDING_API_KEY env var
-  model_name: "local-embedding-model"
-  dim: 768
-  gemini_model: "text-embedding-004"
-
-# =============================
-# Paths / Project
-# =============================
+# ==========================================
+# Paths / Project Configuration
+# ==========================================
 project:
   db_path: "novel/process/facts/facts.db"
   faiss_index_path: "novel/process/facts/vector_index.faiss"
@@ -54,18 +22,18 @@ project:
   frame_dir: "novel/frame"
   process_dir: "novel/process"
   # Language: "Chinese" or "English"
-  language: "Chinese"
+  language: "English"
 
-# =============================
+# ==========================================
 # Retrieval / Constraint Controls
-# =============================
+# ==========================================
 retrieval:
   tier_1_relevance_threshold: 0.9
   tier_3_search_limit: 5
 
-# =============================
+# ==========================================
 # Workflow Controls
-# =============================
+# ==========================================
 workflow:
   world_discussion_rounds: 1
   plot_discussion_rounds: 1

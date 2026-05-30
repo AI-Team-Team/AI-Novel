@@ -262,6 +262,13 @@ Ensures output consistency through a multi-step process:
 
 ## Customization
 
+### Model Configuration
+
+Agent roles are completely decoupled from model specifications:
+
+* **`config.yaml`**: Assigns agent roles (`architect_model`, `planner_model`, `writer_model`, `critic_model`, `scanner_model`, `embedding_model`, and `default_model`) to named model registration keys. Any missing or empty role assignment triggers a validation error immediately.
+* **`config/ai_model_config.yaml`**: Registers credentials, providers, endpoints, and identifiers for LLM and embedding models under named keys. Unset API keys are left blank and do not trigger automatic defaults. Missing `model_name` attributes automatically fall back to the YAML key.
+
 ### i18n & Prompts
 
 All system prompts and user-facing strings are managed in the `i18n/` directory:

@@ -14,20 +14,21 @@ try:
 except ImportError:
     OpenAI = None
 
-import config
-
 class LLMClientError(RuntimeError):
     """Raised when generation client calls fail."""
 
 class LLMClient:
     def __init__(
         self,
-        model_type: str = config.PRIMARY_MODEL_TYPE,
-        model_name: Optional[str] = None,
-        enable_embedding: bool = True
+        model_config: dict,
+        enable_embedding: bool = False
     ):
-        self.model_type = model_type
-        self.model_name = model_name
+        self.model_config = model_config
+        self.model_type = model_config.get("api_type")   # "gemini" or "openai"
+        self.model_name = model_config.get("model_name") # Model name/identifier
+        self.api_key = model_config.get("api_key")
+        self.base_url = model_config.get("base_url")
+        self.enable_embedding = enable_embedding
         
         # Generation Clients
         self.gemini_client = None
@@ -38,32 +39,27 @@ class LLMClient:
         
         self.logger = logging.getLogger("LLMClient")
         
-        # Setup Generation Client
-        if self.model_type == "gemini":
-            self._setup_gemini()
-        elif self.model_type == "openai":
-            self._setup_openai()
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
-            
-        # Setup Embedding Client
-        if enable_embedding:
+        # Setup Client depending on role/type
+        if self.enable_embedding:
             self._setup_embedding()
+        else:
+            if self.model_type == "gemini":
+                self._setup_gemini()
+            elif self.model_type == "openai":
+                self._setup_openai()
+            else:
+                raise ValueError(f"Unknown model type: {self.model_type}")
 
     def _setup_gemini(self):
         if not genai:
             self.logger.error("google-genai package not installed. Please pip install google-genai")
             return
         
-        api_key = config.GEMINI_API_KEY
-        if not api_key or api_key == "YOUR_API_KEY_HERE":
-            api_key = os.getenv("GEMINI_API_KEY")
-        
+        api_key = self.api_key
         if not api_key:
-            self.logger.warning("Gemini API Key not found in config or environment.")
+            self.logger.warning("Gemini API Key not found in config.")
             return
 
-        # Initialize the new Client
         self.gemini_client = genai.Client(api_key=api_key)
 
     def _setup_openai(self):
@@ -73,31 +69,28 @@ class LLMClient:
             
         try:
             self.openai_client = OpenAI(
-                base_url=config.OPENAI_BASE_URL,
-                api_key=config.OPENAI_API_KEY
+                base_url=self.base_url,
+                api_key=self.api_key
             )
         except Exception as e:
             self.logger.error(f"Failed to initialize OpenAI client: {e}")
 
     def _setup_embedding(self):
         """Sets up the dedicated client for embeddings."""
-        if config.EMBEDDING_PROVIDER == "openai":
+        if self.model_type == "openai":
             if not OpenAI:
                 self.logger.error("openai package not installed. Cannot setup OpenAI embeddings.")
                 return
             try:
                 self.openai_embedding_client = OpenAI(
-                    base_url=config.EMBEDDING_BASE_URL,
-                    api_key=config.EMBEDDING_API_KEY
+                    base_url=self.base_url,
+                    api_key=self.api_key
                 )
-                self.logger.info(f"Initialized OpenAI Embedding Client at {config.EMBEDDING_BASE_URL}")
+                self.logger.info(f"Initialized OpenAI Embedding Client at {self.base_url}")
             except Exception as e:
                 self.logger.error(f"Failed to initialize OpenAI Embedding client: {e}")
-        elif config.EMBEDDING_PROVIDER == "gemini":
-            # Gemini typically reuses the same client/auth for both generation and embeddings
-            # If the generation client isn't set up yet (e.g. we are using OpenAI for generation but Gemini for embeddings), we need to set it up.
-            if not self.gemini_client:
-                self._setup_gemini()
+        elif self.model_type == "gemini":
+            self._setup_gemini()
 
     def generate(self, prompt: str, system_instruction: str = None, temperature: float = 0.7, require_json: bool = False) -> str:
         """
@@ -114,23 +107,18 @@ class LLMClient:
             raise LLMClientError("Gemini client not initialized.")
         
         try:
-            # The new SDK uses client.models.generate_content
-            # Config is passed differently
-            
             config_args = {
                 "temperature": temperature
             }
             if require_json:
                 config_args["response_mime_type"] = "application/json"
             
-            # Prepare arguments
             kwargs = {
-                "model": self.model_name or config.GEMINI_MODEL_NAME,
+                "model": self.model_name,
                 "contents": prompt,
                 "config": config_args
             }
 
-            # System instruction is a direct parameter in the new SDK
             if system_instruction:
                 kwargs["config"]["system_instruction"] = system_instruction
 
@@ -150,7 +138,7 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         kwargs = {
-            "model": self.model_name or config.OPENAI_MODEL_NAME,
+            "model": self.model_name,
             "messages": messages,
             "temperature": temperature
         }
@@ -168,15 +156,17 @@ class LLMClient:
         """
         Get embedding for vector search using the dedicated embedding configuration.
         """
-        provider = config.EMBEDDING_PROVIDER
+        provider = self.model_type
 
         if provider == "gemini":
             if not self.gemini_client: 
+                self._setup_gemini()
+            if not self.gemini_client:
                 self.logger.error("Gemini client not initialized for embeddings.")
                 return None
             try:
                 result = self.gemini_client.models.embed_content(
-                    model=config.GEMINI_EMBEDDING_MODEL,
+                    model=self.model_name,
                     contents=text,
                     config={"task_type": "RETRIEVAL_DOCUMENT"}
                 )
@@ -187,11 +177,13 @@ class LLMClient:
                 
         elif provider == "openai":
             if not self.openai_embedding_client:
+                self._setup_embedding()
+            if not self.openai_embedding_client:
                 self.logger.error("OpenAI Embedding client not initialized.")
                 return None
             try:
                 response = self.openai_embedding_client.embeddings.create(
-                    model=config.EMBEDDING_MODEL_NAME,
+                    model=self.model_name,
                     input=text
                 )
                 return response.data[0].embedding

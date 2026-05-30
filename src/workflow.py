@@ -24,53 +24,13 @@ class WorkflowManager(WorkflowResumeMixin, WorkflowIOMixin, WorkflowLanguageMixi
         self.logger = logging.getLogger("WorkflowManager")
         logging.basicConfig(level=logging.INFO)
 
-        self.architect_client = LLMClient(
-            model_type=config.ARCHITECT_MODEL_TYPE,
-            model_name=(
-                config.ARCHITECT_OPENAI_MODEL_NAME
-                if config.ARCHITECT_MODEL_TYPE == "openai"
-                else config.ARCHITECT_GEMINI_MODEL_NAME
-            ),
-            enable_embedding=False,
-        )
-        self.planner_client = LLMClient(
-            model_type=config.PLANNER_MODEL_TYPE,
-            model_name=(
-                config.PLANNER_OPENAI_MODEL_NAME
-                if config.PLANNER_MODEL_TYPE == "openai"
-                else config.PLANNER_GEMINI_MODEL_NAME
-            ),
-            enable_embedding=False,
-        )
-        self.writer_client = LLMClient(
-            model_type=config.WRITER_MODEL_TYPE,
-            model_name=(
-                config.WRITER_OPENAI_MODEL_NAME
-                if config.WRITER_MODEL_TYPE == "openai"
-                else config.WRITER_GEMINI_MODEL_NAME
-            ),
-            enable_embedding=False,
-        )
-        self.critic_client = LLMClient(
-            model_type=config.CRITIC_MODEL_TYPE,
-            model_name=(
-                config.CRITIC_OPENAI_MODEL_NAME
-                if config.CRITIC_MODEL_TYPE == "openai"
-                else config.CRITIC_GEMINI_MODEL_NAME
-            ),
-            enable_embedding=False,
-        )
-        self.scanner_client = LLMClient(
-            model_type=config.SCANNER_MODEL_TYPE,
-            model_name=(
-                config.SCANNER_OPENAI_MODEL_NAME
-                if config.SCANNER_MODEL_TYPE == "openai"
-                else config.SCANNER_GEMINI_MODEL_NAME
-            ),
-            enable_embedding=False,
-        )
+        self.architect_client = LLMClient(model_config=config.ARCHITECT_CONFIG)
+        self.planner_client = LLMClient(model_config=config.PLANNER_CONFIG)
+        self.writer_client = LLMClient(model_config=config.WRITER_CONFIG)
+        self.critic_client = LLMClient(model_config=config.CRITIC_CONFIG)
+        self.scanner_client = LLMClient(model_config=config.SCANNER_CONFIG)
         # Shared embedding client
-        self.embedding_client = LLMClient(model_type=config.PRIMARY_MODEL_TYPE, enable_embedding=True)
+        self.embedding_client = LLMClient(model_config=config.EMBEDDING_CONFIG, enable_embedding=True)
 
         self.memory = MemoryManager(config.DB_PATH, config.FAISS_INDEX_PATH, embedding_dim=config.EMBEDDING_DIM)
         self.state_manager = StoryStateManager(self.memory, self.embedding_client)

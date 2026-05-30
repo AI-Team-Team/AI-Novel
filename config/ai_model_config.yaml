@@ -1,0 +1,41 @@
+# ==========================================
+# Registered AI Models and Embedding Configs
+# ==========================================
+
+# Gemini LLM configuration template
+#
+# The system supports the native Gemini API, but it's unstable.
+# We suggest using Gemini's OpenAI-compatible API instead,
+# Base URL: https://generativelanguage.googleapis.com/v1beta/openai/
+my_gemini:
+  model_type: "llm"
+  api_type: "gemini"
+  api_key: "${GEMINI_API_KEY}"
+  base_url: "https://generativelanguage.googleapis.com/"
+  model_name: "gemini-3.5-flash"
+
+# OpenAI-compatible LLM configuration template
+gpt-5.5:
+  model_type: "llm"
+  api_type: "openai"
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "https://api.openai.com/v1"
+  model_name: "local-model"
+
+# Embedding model configuration template
+emb:
+  model_type: "embedding"
+  api_type: "openai"
+  api_key: "${EMBEDDING_API_KEY}"
+  base_url: "http://localhost:----/v1"
+  model_name: "local-embedding-model"
+  dim: 768
+
+## Customizable using the format above
+
+local-AI:
+  model_type: "llm"
+  api_type: "openai"
+  base_url: "http://localhost:----/v1"
+  api_key: ""
+  model_name: ""

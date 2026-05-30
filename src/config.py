@@ -1,66 +1,114 @@
 import os
+import re
 import yaml
 
-ROLE_NAMES = ("ARCHITECT", "PLANNER", "WRITER", "CRITIC", "SCANNER")
-
-def _load_config():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    yaml_path = os.path.join(project_root, "config.yaml")
-    if os.path.exists(yaml_path):
-        with open(yaml_path, "r", encoding="utf-8") as f:
+def _load_yaml(path: str) -> dict:
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
-_cfg = _load_config()
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+config_yaml_path = os.path.join(project_root, "config.yaml")
+model_config_dir = os.path.join(project_root, "config")
+model_config_path = os.path.join(model_config_dir, "ai_model_config.yaml")
 
-# Helper to safely get nested yaml keys
+# 1. Load config.yaml
+_cfg = _load_yaml(config_yaml_path)
+
 def _get(section: str, key: str, default):
     return _cfg.get(section, {}).get(key, default)
 
-# =============================
-# Generation Model Configuration
-# =============================
-PRIMARY_MODEL_TYPE = _get("models", "primary_type", "openai")
+# 2. Load config/ai_model_config.yaml. If missing, raise error directly
+if not os.path.exists(model_config_path):
+    raise FileNotFoundError(
+        f"Configuration Error: The model registry file was not found at '{model_config_path}'. "
+        f"Please create this file to register your AI models before running the application."
+    )
 
-ARCHITECT_MODEL_TYPE = _get("models", "architect_type", PRIMARY_MODEL_TYPE)
-PLANNER_MODEL_TYPE = _get("models", "planner_type", PRIMARY_MODEL_TYPE)
-WRITER_MODEL_TYPE = _get("models", "writer_type", PRIMARY_MODEL_TYPE)
-CRITIC_MODEL_TYPE = _get("models", "critic_type", PRIMARY_MODEL_TYPE)
-SCANNER_MODEL_TYPE = _get("models", "scanner_type", PRIMARY_MODEL_TYPE)
+_model_registry = _load_yaml(model_config_path)
 
-# Gemini settings (generation)
-# Privacy fields fallback to environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or _get("gemini", "api_key", "YOUR_API_KEY_HERE")
-GEMINI_MODEL_NAME = _get("gemini", "default_model", "gemini-3-flash")
+# Helper to expand environment variables and fetch fallback environment values
+# Helper to expand environment variables
+def _resolve_config_field(val: str, field_name: str, api_type: str) -> str:
+    if not val:
+        return ""
+    expanded = os.path.expandvars(str(val))
+    if expanded.startswith("$") or (expanded.startswith("${") and expanded.endswith("}")):
+        var_name = expanded.replace("$", "").replace("{", "").replace("}", "")
+        env_val = os.getenv(var_name)
+        if env_val is not None:
+            return env_val
+        return ""
+    return expanded
 
-ARCHITECT_GEMINI_MODEL_NAME = _get("gemini", "architect_model", GEMINI_MODEL_NAME)
-PLANNER_GEMINI_MODEL_NAME = _get("gemini", "planner_model", GEMINI_MODEL_NAME)
-WRITER_GEMINI_MODEL_NAME = _get("gemini", "writer_model", GEMINI_MODEL_NAME)
-CRITIC_GEMINI_MODEL_NAME = _get("gemini", "critic_model", GEMINI_MODEL_NAME)
-SCANNER_GEMINI_MODEL_NAME = _get("gemini", "scanner_model", GEMINI_MODEL_NAME)
+# 3. Validate Role Assignment in config.yaml
+models_section = _cfg.get("models", {})
+if not isinstance(models_section, dict):
+    raise ValueError("The 'models' section in config.yaml must be a dictionary.")
 
-# OpenAI-compatible settings
-# Privacy fields fallback to environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or _get("openai", "api_key", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or _get("openai", "base_url", "")
-OPENAI_MODEL_NAME = _get("openai", "default_model", "local-model")
+REQUIRED_ROLES = [
+    "default_model",
+    "architect_model",
+    "planner_model",
+    "writer_model",
+    "critic_model",
+    "scanner_model",
+    "embedding_model",
+]
 
-ARCHITECT_OPENAI_MODEL_NAME = _get("openai", "architect_model", OPENAI_MODEL_NAME)
-PLANNER_OPENAI_MODEL_NAME = _get("openai", "planner_model", OPENAI_MODEL_NAME)
-WRITER_OPENAI_MODEL_NAME = _get("openai", "writer_model", OPENAI_MODEL_NAME)
-CRITIC_OPENAI_MODEL_NAME = _get("openai", "critic_model", OPENAI_MODEL_NAME)
-SCANNER_OPENAI_MODEL_NAME = _get("openai", "scanner_model", OPENAI_MODEL_NAME)
+for role in REQUIRED_ROLES:
+    val = models_section.get(role)
+    if not val or not str(val).strip():
+        raise ValueError(
+            f"Configuration Error: Assigned role '{role}' in config.yaml has an empty or missing value. "
+            f"Please specify a valid registered model key from config/ai_model_config.yaml."
+        )
 
-# =============================
-# Embedding Configuration
-# =============================
-EMBEDDING_PROVIDER = _get("embedding", "provider", "openai")
-EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL") or _get("embedding", "base_url", "")
-EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or _get("embedding", "api_key", "")
-EMBEDDING_MODEL_NAME = _get("embedding", "model_name", "local-embedding-model")
-EMBEDDING_DIM = int(_get("embedding", "dim", 768))
-GEMINI_EMBEDDING_MODEL = _get("embedding", "gemini_model", "text-embedding-004")
+# 4. Resolve registered models from ai_model_config.yaml
+resolved_models = {}
+for key, model_info in _model_registry.items():
+    if not isinstance(model_info, dict):
+        continue
+    api_type = str(model_info.get("api_type", "")).strip().lower()
+    model_type = str(model_info.get("model_type", "llm")).strip().lower()
+    raw_api_key = model_info.get("api_key", "")
+    raw_base_url = model_info.get("base_url", "")
+    model_name = str(model_info.get("model_name", "")).strip()
+    if not model_name:
+        model_name = key
 
+    resolved_api_key = _resolve_config_field(raw_api_key, "api_key", api_type)
+    resolved_base_url = _resolve_config_field(raw_base_url, "base_url", api_type)
+
+    resolved_models[key] = {
+        "api_type": api_type,
+        "model_type": model_type,
+        "api_key": resolved_api_key,
+        "base_url": resolved_base_url,
+        "model_name": model_name,
+        "dim": int(model_info.get("dim", 768)),
+    }
+
+# 5. Resolve configured roles
+def _resolve_role_config(role_name: str) -> dict:
+    model_key = models_section.get(role_name)
+    if model_key not in resolved_models:
+        raise ValueError(
+            f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
+            f"which is not registered in config/ai_model_config.yaml."
+        )
+    return resolved_models[model_key]
+
+ARCHITECT_CONFIG = _resolve_role_config("architect_model")
+PLANNER_CONFIG = _resolve_role_config("planner_model")
+WRITER_CONFIG = _resolve_role_config("writer_model")
+CRITIC_CONFIG = _resolve_role_config("critic_model")
+SCANNER_CONFIG = _resolve_role_config("scanner_model")
+EMBEDDING_CONFIG = _resolve_role_config("embedding_model")
+EMBEDDING_DIM = int(EMBEDDING_CONFIG.get("dim", 768))
+
+# Expose key variables for other parts of the application or tests
 # =============================
 # Paths / Project
 # =============================

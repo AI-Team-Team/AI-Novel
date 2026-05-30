@@ -23,13 +23,34 @@ This guide will walk you through setting up and using the AI Novel project to ge
 
 ## 2. Configuration
 
-Open `config.yaml` to customize the system behavior:
+Decouple model registration and agent role assignment using two configuration files:
 
-* **Language**: Set `LANGUAGE = "Chinese"` or `"English"`.
-* **Models**: Configure the `PRIMARY_MODEL_TYPE` and specific model names for each agent (Architect, Planner, Writer, Critic, Scanner).
-* **Endpoints**: Set `OPENAI_BASE_URL`, `EMBEDDING_BASE_URL`, and API keys in your environment variables or directly in the config (not recommended for secrets).
-* **Workflow**: Adjust `WORLD_DISCUSSION_ROUNDS` or `CHAPTER_REVISION_ROUNDS` to control how much the agents iterate.
-* **Auto Mode**: Set `AUTO_GENERATION_MAX_RETRIES` (default: 3) to control how many times the system will retry generating a chapter if an API or JSON parsing error occurs during `--auto` mode.
+1. **`config.yaml`** (at the project root): Customize system behaviors, project paths, retrieval, workflow parameters, and map agent roles directly to model registration keys.
+2. **`config/ai_model_config.yaml`** (inside the `config/` directory): Register LLM and embedding specifications.
+
+### Mapping Agent Roles
+
+In `config.yaml`, roles must be assigned to registered keys in a `models` block
+
+*Note: All role assignments must be provided and non-empty; otherwise, the system will raise an error and exit immediately on startup.*
+
+### Registering Models
+
+In `config/ai_model_config.yaml`, define your model registry under named keys:
+
+```yaml
+ai:
+  model_type: "llm"
+  api_type: "openai"
+  api_key: "${API_KEY}"
+  base_url: ""
+  model_name: ""
+```
+
+* **Environment Variables**: Use `${VAR_NAME}` or `$VAR_NAME` to pull values from system environment variables. If left blank or unset, no default fallbacks are intelligently filled, and they are passed directly as empty strings.
+* **Model Name Fallback**: If `model_name` is empty or omitted, it defaults to the registration key name.
+* **Workflow Parameters**: Customize paths, `WORLD_DISCUSSION_ROUNDS`, or `CHAPTER_REVISION_ROUNDS` under `config.yaml` to control how much the agents iterate.
+* **Auto Mode**: Adjust `AUTO_GENERATION_MAX_RETRIES` (default: 3) to control chapter retry boundaries during `--auto` loop execution.
 
 ## 3. Getting Started
 
