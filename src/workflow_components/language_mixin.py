@@ -58,31 +58,57 @@ class WorkflowLanguageMixin:
         chapter_num: Optional[int] = None,
         world_building: bool = False,
     ) -> str:
-        if self._is_expected_language(text):
-            return text
-        known_names = self._get_known_character_names()
-        confidence = language_confidence(text, exclude_names=known_names)
-        self.logger.warning(
-            "Language guard triggered for %s (zh=%.3f, en=%.3f, after name exclusion)",
-            role,
-            confidence["chinese"],
-            confidence["english"],
-        )
-        rewrite_prompt = (
-            f"Rewrite the following content in {self._language_name()} only.\n"
-            "Keep all details and structure. Output only the rewritten content.\n\n"
-            "--- CONTENT BEGIN ---\n"
-            f"{text}\n"
-            "--- CONTENT END ---"
-        )
-        rewritten = client.generate(prompt=rewrite_prompt, system_instruction=system_instruction)
-        self._log_llm_interaction(
-            role=role,
-            phase="Language Rewrite",
-            prompt=rewrite_prompt,
-            response=rewritten,
-            system_instruction=system_instruction,
-            chapter_num=chapter_num,
-            world_building=world_building,
-        )
-        return rewritten
+        current_text = text
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            if self._is_expected_language(current_text):
+                return current_text
+            known_names = self._get_known_character_names()
+            confidence = language_confidence(current_text, exclude_names=known_names)
+            self.logger.warning(
+                "Language guard triggered for %s (zh=%.3f, en=%.3f, after name exclusion, attempt %d/%d)",
+                role,
+                confidence["chinese"],
+                confidence["english"],
+                attempt + 1,
+                max_attempts,
+            )
+            if attempt == 0:
+                rewrite_prompt = (
+                    f"Rewrite the following content in {self._language_name()} only.\n"
+                    "Keep all details and structure. Output only the rewritten content.\n\n"
+                    "--- CONTENT BEGIN ---\n"
+                    f"{current_text}\n"
+                    "--- CONTENT END ---"
+                )
+            else:
+                rewrite_prompt = (
+                    f"CRITICAL: The previous rewrite attempt still failed our language guard check.\n"
+                    f"You MUST rewrite the content ENTIRELY and strictly in {self._language_name()} only.\n"
+                    "Do NOT include any foreign words or mixed language characters (except character names).\n"
+                    "Keep all details and structure. Output only the rewritten content.\n\n"
+                    "--- CONTENT BEGIN ---\n"
+                    f"{current_text}\n"
+                    "--- CONTENT END ---"
+                )
+            try:
+                current_text = client.generate(prompt=rewrite_prompt, system_instruction=system_instruction)
+            except Exception as e:
+                self.logger.error(f"Language rewrite failed during generation: {e}")
+                if attempt == max_attempts - 1:
+                    raise
+            self._log_llm_interaction(
+                role=role,
+                phase=f"Language Rewrite Attempt {attempt + 1}",
+                prompt=rewrite_prompt,
+                response=current_text,
+                system_instruction=system_instruction,
+                chapter_num=chapter_num,
+                world_building=world_building,
+            )
+        if not self._is_expected_language(current_text):
+            raise RuntimeError(
+                f"Language Guard Error: Failed to rewrite content in {self._language_name()} "
+                f"after {max_attempts} attempts for role '{role}'."
+            )
+        return current_text

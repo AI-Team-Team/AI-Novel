@@ -649,6 +649,8 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             return
         normalized_intent = (intent_tag or "").strip()
         normalized_metadata = metadata or {}
+        if chapter_num is not None:
+            normalized_metadata["chapter"] = chapter_num
         metadata_json = json.dumps(normalized_metadata, ensure_ascii=False, sort_keys=True)
         self.cursor.execute(
             """SELECT faiss_id

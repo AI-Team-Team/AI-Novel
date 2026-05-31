@@ -117,8 +117,9 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
 
 **Tier 3 Operations (Semantic):**
 
-* `add_semantic_fact(content: str, embedding: List[float], metadata: Dict = None)`
+* `add_semantic_fact(content: str, embedding: List[float], metadata: Dict = None, source: str = "unknown", chapter_num: Optional[int] = None, source_commit_id: Optional[str] = None, intent_tag: str = "")`
   * Adds a text chunk to the vector store.
+  * Injects `chapter_num` directly into the SQLite metadata JSON column to enable spatiotemporal Future Gate filtering and Temporal Proximity boost reranking during retrieval.
   * Supports audit metadata: `source_commit_id`, `intent_tag`.
 * `search_semantic(query_embedding: List[float], k: int = 5) -> List[Dict]`
   * Retrieves the top `k` most similar text chunks.

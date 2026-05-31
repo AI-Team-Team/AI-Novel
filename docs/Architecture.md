@@ -173,7 +173,9 @@ Planning/writing retrieval now follows an explicit chain:
 1. Query intent classification (`task_type`, strictness, required tiers, semantic gate).
 2. SQLite prefilter (characters/rules/events/conflicts by intent scope).
 3. FAISS semantic retrieval (Tier-3 candidates).
-4. Cross-tier alignment: In strict mode, filters out semantic hits mentioning dead characters. In non-strict mode, all hits pass through — nuanced classification is handled upstream by the Critic.
+4. Cross-tier alignment:
+   * **Future Gate Filter**: Strictly filters out any semantic hits whose metadata indicates they are from future chapters (`metadata["chapter"] > current_chapter_num`), preventing narrative foresight leaks.
+   * **Dead Characters Filter**: In strict mode, filters out semantic hits mentioning dead characters. In non-strict mode, all hits pass through.
 5. Context package assembly for prompts (policy + compact summaries + aligned Tier-3 details).
 
 ## Conflict Detection Architecture
@@ -230,8 +232,10 @@ To avoid "context pollution," the `StoryStateManager` filters and ranks facts:
 
 * **Intent-based Gating**: Determines if semantic retrieval is needed.
 * **SQLite Pre-filtering**: Limits character and event scope based on focus entities.
-* **Cross-Tier Alignment**: Filters out semantic hallucinations (T3) that contradict hard facts (T1/T2), such as a dead character performing actions.
-* **Weighted Reranking**: Boosts details that match focus entities (+0.35) or locations (+0.50).
+* **Cross-Tier Alignment**:
+  * **Spatiotemporal Future Gate**: Discards any retrieved details that belong to future chapters to prevent timeline leaks.
+  * **Dead Character Gate**: Filters out semantic hallucinations (T3) that contradict hard facts (T1/T2), such as a dead character performing active actions.
+* **Weighted Reranking**: Boosts details that match focus entities (+0.35) or locations (+0.50), and adds a **Temporal Proximity Boost** ($+0.4 / (1.0 + |DetailChapter - TargetChapter|)$) for active chapter details to prioritize chronologically closer events. Initial seed facts/lore are kept stable without decay.
 
 ### 2. Atomic Memory Transactions
 
@@ -251,13 +255,16 @@ The `WorkflowResumeMixin` performs a three-stage integrity check during resume:
 
 ### 4. Language Guard
 
-Ensures output consistency through a multi-step process:
+Ensures output consistency through a multi-step process with robust retry boundaries:
 
 1. **Name Exclusion**: Known character names from the DB are excluded from text before computing CJK/Latin ratios, preventing false positives when Chinese names appear in English text (or vice versa).
 2. **Confidence Ratio**: Calculates CJK/Latin character ratio on the name-excluded text.
 3. **Threshold Check**: Uses direct thresholds (Chinese ≥ 20% CJK; English ≥ 60% Latin with ≤ 10% CJK) to determine if text is in the expected language.
 4. **Safety Net**: For English mode, only triggers rewrite if CJK content exceeds 30% after name exclusion.
-5. **LLM Rewrite**: If language check fails, triggers an automatic LLM-driven rewrite.
+5. **Bounded LLM Rewrite Loop**: If the language check fails, the system executes an automatic LLM-driven rewrite loop with up to **2 attempts**:
+   * The first attempt uses a standard translation/rewrite instruction prompt.
+   * If the first output still fails the confidence check, a second attempt is triggered using a highly strict **escalation prompt** explicitly demanding the pure expected language and the elimination of foreign mixed characters.
+   * If both attempts fail to meet the confidence thresholds, the system raises a `RuntimeError` (fail-fast boundary) to prevent corrupted text from entering the draft.
 6. **Critic Review**: Language consistency is also part of the Critic's system prompt responsibilities.
 
 ## Customization

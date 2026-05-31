@@ -175,6 +175,7 @@ class StoryStateManager:
         hits: List[Dict],
         focus_entities: List[str],
         focus_locations: List[str],
+        target_chapter: Optional[int] = None,
     ) -> List[Dict]:
         ranked = []
         entity_tokens = [x.lower() for x in focus_entities]
@@ -192,7 +193,15 @@ class StoryStateManager:
             for token in location_tokens:
                 if token and (token == location or token in content):
                     location_bonus += 0.5
-            rank_score = base + entity_bonus + location_bonus
+            
+            # Temporal proximity boost for active chapters (chapter > 0)
+            time_bonus = 0.0
+            if target_chapter is not None:
+                detail_chap = meta.get("chapter")
+                if isinstance(detail_chap, (int, float)) and detail_chap > 0:
+                    time_bonus = 0.40 / (1.0 + abs(detail_chap - target_chapter))
+                    
+            rank_score = base + entity_bonus + location_bonus + time_bonus
             ranked.append((rank_score, hit))
         ranked.sort(key=lambda x: x[0], reverse=True)
         return [x[1] for x in ranked]
@@ -242,21 +251,31 @@ class StoryStateManager:
         hits: List[Dict],
         db_chars: List[tuple],
         strict_mode: bool,
+        current_chapter_num: Optional[int] = None,
     ) -> List[Dict]:
-        """Filter semantic hits that mention dead characters in strict mode.
-
-        In non-strict mode all hits pass through — nuanced memorial/active
-        classification is left to the LLM Critic rather than keyword heuristics.
-        """
+        """Filter semantic hits that are from the future or mention dead characters in strict mode."""
         if not hits:
             return []
-        dead_entities = {name for name, _, status in db_chars if status == "dead"}
-        if not dead_entities:
-            return hits
-        if not strict_mode:
-            return hits
-        aligned: List[Dict] = []
+
+        # 1. Spatiotemporal Future Gate: filter out any future chapter leaks
+        gated_hits = []
         for hit in hits:
+            meta = hit.get("metadata") or {}
+            chapter_val = meta.get("chapter")
+            if current_chapter_num is not None and isinstance(chapter_val, (int, float)) and chapter_val > current_chapter_num:
+                continue
+            gated_hits.append(hit)
+
+        if not gated_hits:
+            return []
+
+        # 2. Dead characters pre-alignment (strict mode check)
+        dead_entities = {name for name, _, status in db_chars if status == "dead"}
+        if not dead_entities or not strict_mode:
+            return gated_hits
+
+        aligned: List[Dict] = []
+        for hit in gated_hits:
             content = hit.get("content") or ""
             lowered = content.lower()
             blocked = False
@@ -305,11 +324,13 @@ class StoryStateManager:
             hits=raw_hits,
             db_chars=snapshot["characters"],
             strict_mode=bool(intent.get("strict_mode")),
+            current_chapter_num=chapter_num,
         )
         ranked_hits = self.rerank_semantic_hits(
             aligned_hits,
             intent.get("focus_entities", []) or [],
             intent.get("focus_locations", []) or [],
+            target_chapter=chapter_num,
         )
         top_hits = ranked_hits[: self.tier_3_search_limit]
         semantic_summary = get_resource("ui.semantic_skipped")
@@ -354,6 +375,7 @@ class StoryStateManager:
             hits=raw_hits,
             db_chars=db_chars,
             strict_mode=bool(intent.get("strict_mode")),
+            current_chapter_num=chapter_num,
         )
         if not intent["should_semantic"]:
             return get_resource("ui.semantic_skipped")
@@ -363,6 +385,7 @@ class StoryStateManager:
             aligned_hits,
             intent.get("focus_entities", []) or [],
             intent.get("focus_locations", []) or [],
+            target_chapter=chapter_num,
         )
         return self._format_semantic_lines(intent, ranked[: self.tier_3_search_limit])
 
