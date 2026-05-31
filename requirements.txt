@@ -5,3 +5,5 @@ pydantic
 sqlalchemy
 openai
 PyYAML
+Typer
+Rich
