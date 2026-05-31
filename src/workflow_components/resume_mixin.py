@@ -290,6 +290,13 @@ class WorkflowResumeMixin:
         self.memory.purge_incomplete_chapter_commits(chapter_num=chapter_num, source="scan_chapter")
 
     def run_continuous_loop(self, start_chapter: int, count: int):
+        self.in_auto_mode = True
+        try:
+            self._run_continuous_loop_impl(start_chapter, count)
+        finally:
+            self.in_auto_mode = False
+
+    def _run_continuous_loop_impl(self, start_chapter: int, count: int):
         self.logger.info(f"Starting continuous generation from Chapter {start_chapter} for {count} chapters.")
         if count <= 0:
             self.logger.info("Count <= 0. Skip continuous generation.")

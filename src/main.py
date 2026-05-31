@@ -42,6 +42,7 @@ def print_custom_help():
         ("--replay-commit [bold magenta]TEXT[/bold magenta]", "Replay a failed chapter commit by COMMIT_ID"),
         ("--triage-batch [bold magenta]LIMIT[/bold magenta]", "Resolve up to LIMIT NON_BLOCKING conflicts via keep_existing"),
         ("--rebuild-vectors", "Rebuild FAISS index from vector_metadata deterministically"),
+        ("--ai-resolve-conflicts", "Enable Multi-Agent Cooperative Debate Conflict Resolver to automatically resolve blocking conflicts"),
         ("--help, -h", "Show this message and exit.")
     ]
     
@@ -136,6 +137,11 @@ def main(
         "--rebuild-vectors",
         help="Rebuild FAISS index from vector_metadata deterministically",
     ),
+    ai_resolve_conflicts: bool = typer.Option(
+        False,
+        "--ai-resolve-conflicts",
+        help="Enable Multi-Agent Cooperative Debate Conflict Resolver to automatically resolve blocking conflicts",
+    ),
     help: bool = typer.Option(
         False,
         "--help",
@@ -161,6 +167,7 @@ def main(
         replay_commit is not None,
         triage_batch is not None,
         rebuild_vectors,
+        ai_resolve_conflicts,
     ])
 
     if not has_args or help:
@@ -171,6 +178,8 @@ def main(
         from workflow import WorkflowManager
 
         workflow = WorkflowManager()
+        if ai_resolve_conflicts:
+            workflow.ai_resolve_conflicts = True
 
         if init:
             console.print(Panel("[bold cyan]Initializing Novel Workspace[/bold cyan]", border_style="cyan"))

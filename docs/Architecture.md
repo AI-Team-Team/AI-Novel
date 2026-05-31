@@ -211,6 +211,23 @@ Performed before DB commit in `scan_chapter()` via `_critic_review_extracted_fac
   * `auto_keep_existing`: auto-resolve `BLOCKING` conflicts with `keep_existing` before gate checks.
   * `manual_block`: never auto-resolve; gate blocks while any `BLOCKING` conflict remains.
 
+### Multi-Agent Cooperative Debate Conflict Resolver
+
+When running under continuous writing mode (`--auto`) or enabled via the CLI flag (`--ai-resolve-conflicts`), the system automatically spawns a specialized **Cooperative Discussion Panel** consisting of three AI agents to debate and resolve any encountered blocking conflicts:
+
+* **Critic (Historian)**: Strict defender of database integrity, rules, and past continuity (advocates for `keep_existing`).
+* **Scanner (Prose Advocate)**: Defends new creative prose intentions, momentum, and character developments (advocates for `apply_incoming`).
+* **Planner (Arbitrator)**: Leads the discussion panel, moderates the debate, and synthesizes a final narrative consensus or creative compromise.
+
+#### Debate Termination & Standoff Governance (Fail-Fast)
+
+* **Consensus Rule**: The debate runs for exactly $N$ rounds (configured via `conflict_discussion_rounds`, default: 2).
+* **Fail-Fast Boundary**: If the Planner cannot synthesize a unanimous agreement on exactly `"apply_incoming"` or `"keep_existing"` by the final round, **the system must immediately stop and trigger a standoff** (raising `RuntimeError`). This prevents silent data corruption and queues the debate log for human inspection.
+* **Deep Context Assembly**: The debate panel receives a comprehensive context window including:
+  * **Multi-Chapter Prose Window**: Full text of preceding chapter Ch N-1, conflict chapter Ch N, and succeeding chapter Ch N+1.
+  * **Structured Context**: SQLite character profiles/attributes, global strict world rules, and the last 10 timeline events.
+* **Auditable Logs**: Every debate session transcript and reasoning is written to `novel/process/discussions/conflict_{id}_resolution_discussion.md`.
+
 ## Commit Replay Recovery
 
 * `chapter_commits` now tracks `error_message`, `replay_count`, and `last_replayed_at`.

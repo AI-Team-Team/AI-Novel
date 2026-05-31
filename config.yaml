@@ -43,6 +43,7 @@ workflow:
   chapter_text_discussion_rounds: 1
   auto_generation_max_retries: 3
   language_rewrite_max_attempts: 2
+  conflict_discussion_rounds: 2
 
   # Blocking conflict governance mode:
   # - "auto_keep_existing": auto-resolve BLOCKING conflicts by keep_existing before gating.

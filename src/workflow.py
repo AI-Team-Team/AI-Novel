@@ -24,6 +24,7 @@ from workflow_components.project_mixin import ProjectWorkflowMixin
 from workflow_components.planning_mixin import PlanningWorkflowMixin
 from workflow_components.writing_mixin import WritingWorkflowMixin
 from workflow_components.scanning_mixin import ScanningWorkflowMixin
+from workflow_components.conflict_resolver import ConflictResolverWorkflowMixin
 
 class WorkflowManager(
     WorkflowResumeMixin,
@@ -32,7 +33,8 @@ class WorkflowManager(
     ProjectWorkflowMixin,
     PlanningWorkflowMixin,
     WritingWorkflowMixin,
-    ScanningWorkflowMixin
+    ScanningWorkflowMixin,
+    ConflictResolverWorkflowMixin
 ):
     def __init__(self):
         self.logger = logging.getLogger("WorkflowManager")
@@ -47,6 +49,9 @@ class WorkflowManager(
         self.embedding_client = LLMClient(model_config=config.EMBEDDING_CONFIG, enable_embedding=True)
 
         self.memory = MemoryManager(config.DB_PATH, config.FAISS_INDEX_PATH)
+        
+        self.ai_resolve_conflicts = False
+        self.in_auto_mode = False
         
         # Setup get_embedding proxy wrapper for validation
         original_get_embedding = self.embedding_client.get_embedding
@@ -248,9 +253,40 @@ class WorkflowManager(
         return overview
 
     def _enforce_conflict_free_state(self, stage: str):
+        blocking_pending = self.memory.get_pending_blocking_conflict_count()
+        
+        # Trigger AI debate if option/auto mode enabled and there are blocking conflicts
+        if blocking_pending > 0 and (getattr(self, "ai_resolve_conflicts", False) or getattr(self, "in_auto_mode", False)):
+            self.logger.info(f"[AUTO] Conflict(s) detected in {stage}. Spawning AI Debate Panel...")
+            
+            # Fetch all pending blocking conflicts
+            rows = self.memory.get_pending_conflicts(limit=50, blocking_only=True)
+            for row in rows:
+                conflict_id = row[0]
+                entity_type = row[1]
+                entity_key = row[2]
+                conflict_type = row[3]
+                
+                # Run Multi-Agent debate resolution
+                resolved = self.ai_debate_resolve_conflict(conflict_id)
+                if resolved:
+                    self.logger.info(f"[AUTO] Conflict #{conflict_id} successfully resolved by AI panel.")
+                else:
+                    self.logger.error(f"[AUTO] Conflict #{conflict_id} debate ended in a STANDOFF.")
+                    raise RuntimeError(
+                        f"Conflict Resolution Standoff: Multi-Agent Debate Panel failed to agree on a resolution "
+                        f"for BLOCKING conflict #{conflict_id} ({conflict_type} for {entity_type}:{entity_key}). "
+                        f"Fail-Fast triggered. Execution halted."
+                    )
+            
+            # Recalculate blocking conflicts after AI debate
+            blocking_pending = self.memory.get_pending_blocking_conflict_count()
+
+        # Fallback to standard blocking/auto logic if not in auto-debate mode
         mode = (getattr(config, "BLOCKING_CONFLICT_MODE", "manual_block") or "manual_block").lower()
         if mode == "auto_keep_existing":
             self.state_manager.auto_resolve_pending_conflicts()
+            blocking_pending = self.memory.get_pending_blocking_conflict_count()
         elif mode == "manual_block":
             pass
         else:
@@ -258,7 +294,7 @@ class WorkflowManager(
                 f"Invalid BLOCKING_CONFLICT_MODE={mode}. "
                 "Expected one of: auto_keep_existing, manual_block."
             )
-        blocking_pending = self.memory.get_pending_blocking_conflict_count()
+
         total_pending = self.memory.get_pending_conflict_count()
         if blocking_pending > 0:
             raise RuntimeError(

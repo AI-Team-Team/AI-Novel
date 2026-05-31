@@ -223,3 +223,19 @@ Workflow gate behavior for unresolved `BLOCKING` conflicts is configured by `con
 * `manual_block`:
   * Does not auto-resolve `BLOCKING` conflicts.
   * Gate raises runtime error until conflicts are resolved explicitly.
+
+### Multi-Agent Cooperative Debate Conflict Resolution
+
+When continuous loops (`--auto`) or the explicit CLI flag `--ai-resolve-conflicts` are active:
+
+* **Automatic Triage Panel**: Any encountered blocking conflicts automatically interrupt the generation workflow and launch a Multi-Agent Debate Panel (Planner, Critic, and Scanner) in the background.
+* **Consensus Resolution**: If consensus is successfully negotiated in exactly $N$ rounds (configured by `config.CONFLICT_DISCUSSION_ROUNDS`), the chosen action (`apply_incoming` or `keep_existing`) is atomically committed to SQLite and documented under `novel/process/discussions/conflict_{id}_resolution_discussion.md`.
+* **Fail-Fast Standoff**: If consensus cannot be reached, execution is immediately halted (raising a `RuntimeError`) to prevent database corruption.
+
+#### Core API Methods
+
+* `ai_debate_resolve_conflict(conflict_id: int) -> bool`
+  * Orchestrates the multi-agent debate panel for the specified conflict.
+  * Spawns Critic, Scanner, and Planner LLM clients to debate across $N$ rounds.
+  * Parses final JSON payload, executes the safe transaction block, and records transcripts.
+  * Returns `True` on successful resolution, `False` on standoff.

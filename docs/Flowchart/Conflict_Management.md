@@ -114,6 +114,8 @@ stateDiagram-v2
 
     BLOCKING --> RESOLVED: Manual --resolve-conflict
     BLOCKING --> RESOLVED: auto_resolve (Strict Mode)
+    BLOCKING --> RESOLVED: Multi-Agent Debate Panel Consensus
+    BLOCKING --> STANDOFF: Multi-Agent Debate Panel Consensus Failure (Fail-Fast)
     
     NON_BLOCKING --> RESOLVED: batch_triage
     
@@ -124,7 +126,53 @@ stateDiagram-v2
     }
 ```
 
-## 4. Runtime Integrity Rules
+## 4. Multi-Agent Cooperative Debate Conflict Resolution Workflow
+
+When continuous loops (`--auto`) or the CLI flag `--ai-resolve-conflicts` are active, the system automatically spawns a Multi-Agent Debate Panel to resolve blocking conflicts rather than halting immediately or applying simple heuristics.
+
+```mermaid
+flowchart TD
+    Start["Blocking Conflict Encountered"] --> CheckMode{"AI Debate Enabled?\n(in --auto mode OR --ai-resolve-conflicts)"}
+    
+    CheckMode -- "No" --> StandardGate{"BLOCKING_CONFLICT_MODE?"}
+    StandardGate -- "auto_keep_existing" --> AutoKeep["Auto-resolve via keep_existing"]
+    StandardGate -- "manual_block" --> FailImmediate["Raise RuntimeError & Pause"]
+    
+    CheckMode -- "Yes" --> ContextAssembly["1. Deep Context Window Assembly"]
+    
+    subgraph Context ["Deep Context Window"]
+        C1["Multi-Chapter Prose\n(Ch N-1, Ch N, Ch N+1)"]
+        C2["SQLite Character Profiles"]
+        C3["SQLite Global Rules"]
+        C4["SQLite Last 10 Timeline Events"]
+    end
+    
+    ContextAssembly --> Context
+    Context --> DebateLoop["2. Bounded Debate Loop (1 to N Rounds)"]
+    
+    subgraph Panel ["Debate Panel"]
+        Critic["Critic (Historian)\nDefends continuity & rules"]
+        Scanner["Scanner (Prose Advocate)\nDefends writer's creative choices"]
+        Planner["Planner (Arbitrator)\nModerates debate & summarizes"]
+        
+        Critic --> Scanner --> Planner
+    end
+    
+    DebateLoop --> Panel
+    Panel --> FinalRound{"Round N (Final)?"}
+    
+    FinalRound -- "Planner decides action" --> ExtractJSON["Parse JSON payload"]
+    ExtractJSON --> ValidateConsensus{"Valid Consensus Action?\n(apply_incoming OR keep_existing)"}
+    
+    ValidateConsensus -- "Yes" --> CommitDB["3. Commit SQLite Transaction & Mark RESOLVED"]
+    CommitDB --> LogMD["Write novel/process/discussions/...md transcript"]
+    LogMD --> Resume["Resume workflow execution"]
+    
+    ValidateConsensus -- "No (Standoff)" --> LogStandoff["Write standoff transcript to ...md"]
+    LogStandoff --> FailFast["Fail-Fast: Raise RuntimeError & Halt"]
+```
+
+## 5. Runtime Integrity Rules
 
 * **Critical Globals**: `world_bible.md`, `plot_outline.md`, and `detailed_plot_outline.md` must be valid. If missing or corrupted, the system fails fast and requests `--start` again.
 * **Chapter Artifacts**: If *any* artifact of a chapter (Guide, Text, Facts, Review) is missing or invalid, the entire chapter is treated as incomplete.
