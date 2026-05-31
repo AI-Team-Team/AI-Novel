@@ -12,8 +12,7 @@ Any resolved issues should not be stored in this document.
 4. Build consumers for `discussion_index.jsonl` and conflict triage output (analytics/audit dashboards).
 5. Harden auto-mode resume with persistent run checkpoints and retry/backoff metadata (current version already performs strict runtime artifact integrity validation and discard/regenerate).
 6. Add chapter-scope cleanup manifest so interrupted generations can purge generated artifacts and commit traces with stronger determinism.
-7. Continue module split of monolithic orchestration/storage files (`workflow.py`, `memory.py`) into stable component layers (Phase 1 & 2 fully done: workflow split into resume/io/language and project/planning/writing/scanning mixins; utility helpers extracted from memory; state manager decoupled via dependency injection).
-8. Harden FAISS reliability paths: batch-safe vector reset persistence, index-load failure metadata reconciliation, and rebuild skipped-row audit retention.
+7. Harden FAISS reliability paths: batch-safe vector reset persistence, index-load failure metadata reconciliation, and rebuild skipped-row audit retention.
 
 ## Known Issues
 
