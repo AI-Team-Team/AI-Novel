@@ -36,16 +36,16 @@ flowchart TD
     Write["Writer: Generate Prose"] --> Names["Get known character names from DB"]
     Names --> Guard{"_enforce_output_language"}
     
-    Guard -- "Exclude names → Compute CJK/Latin ratio" --> Check{"Confidence >= Threshold?"}
+    Guard -- "Exclude names → Compute CJK/Latin ratio" --> Check{"Confidence is greater than or equal to Threshold?"}
     
     Check -- "Yes" --> Accept["Accept Prose"]
     
-    Check -- "No (CJK > 30% after name exclusion)" --> Rewrite["Log Warning: Language Guard Triggered"]
+    Check -- "No (CJK greater than 30% after name exclusion)" --> Rewrite["Log Warning: Language Guard Triggered"]
     Rewrite --> LLM_Rewrite["LLM: Specialized Rewrite Task"]
     LLM_Rewrite -- "Keep structure, translate to Target Language" --> Accept
     
     Accept --> Save["Save chapter_n.md"]
-    Save --> Review["Critic: Review & Revise Chapter"]
+    Save --> Review["Critic: Review and Revise Chapter"]
 ```
 
 ## 3. Review, Scan & Commit

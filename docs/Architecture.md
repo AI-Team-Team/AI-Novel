@@ -232,6 +232,9 @@ When running under continuous writing mode (`--auto`) or enabled via the CLI fla
 
 To support complex narrative tasks, background lore alignment, and timeline auditing, the system implements an experimental **Modular Broker-Node Autonomy Suite** that empowers AI agents to transition from passive context consumers to active coordinators.
 
+> [!NOTE]
+> For in-depth technical specifications, class models, and detailed control-flow Mermaid diagrams of each component, please refer to the dedicated **[AI Autonomy Suite Specification](Autonomy_Suite/README.md)** and the **[AI Autonomy Suite Flowcharts](Flowchart/Autonomy_Suite/README.md)**.
+
 ### 1. Modular Event-Broker Node Architecture
 
 The autonomy suite is built on a highly decoupled event-driven model:

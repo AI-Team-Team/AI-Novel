@@ -136,7 +136,7 @@ flowchart TD
     
     CheckMode -- "No" --> StandardGate{"BLOCKING_CONFLICT_MODE?"}
     StandardGate -- "auto_keep_existing" --> AutoKeep["Auto-resolve via keep_existing"]
-    StandardGate -- "manual_block" --> FailImmediate["Raise RuntimeError & Pause"]
+    StandardGate -- "manual_block" --> FailImmediate["Raise RuntimeError and Pause"]
     
     CheckMode -- "Yes" --> ContextAssembly["1. Deep Context Window Assembly"]
     
@@ -151,9 +151,9 @@ flowchart TD
     Context --> DebateLoop["2. Bounded Debate Loop (1 to N Rounds)"]
     
     subgraph Panel ["Debate Panel"]
-        Critic["Critic (Historian)\nDefends continuity & rules"]
+        Critic["Critic (Historian)\nDefends continuity and rules"]
         Scanner["Scanner (Prose Advocate)\nDefends writer's creative choices"]
-        Planner["Planner (Arbitrator)\nModerates debate & summarizes"]
+        Planner["Planner (Arbitrator)\nModerates debate and summarizes"]
         
         Critic --> Scanner --> Planner
     end
@@ -164,12 +164,12 @@ flowchart TD
     FinalRound -- "Planner decides action" --> ExtractJSON["Parse JSON payload"]
     ExtractJSON --> ValidateConsensus{"Valid Consensus Action?\n(apply_incoming OR keep_existing)"}
     
-    ValidateConsensus -- "Yes" --> CommitDB["3. Commit SQLite Transaction & Mark RESOLVED"]
+    ValidateConsensus -- "Yes" --> CommitDB["3. Commit SQLite Transaction and Mark RESOLVED"]
     CommitDB --> LogMD["Write novel/process/discussions/...md transcript"]
     LogMD --> Resume["Resume workflow execution"]
     
     ValidateConsensus -- "No (Standoff)" --> LogStandoff["Write standoff transcript to ...md"]
-    LogStandoff --> FailFast["Fail-Fast: Raise RuntimeError & Halt"]
+    LogStandoff --> FailFast["Fail-Fast: Raise RuntimeError and Halt"]
 ```
 
 ## 5. Runtime Integrity Rules
