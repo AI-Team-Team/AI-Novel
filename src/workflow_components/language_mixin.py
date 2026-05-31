@@ -59,7 +59,7 @@ class WorkflowLanguageMixin:
         world_building: bool = False,
     ) -> str:
         current_text = text
-        max_attempts = 2
+        max_attempts = max(1, getattr(config, "LANGUAGE_REWRITE_MAX_ATTEMPTS", 2))
         for attempt in range(max_attempts):
             if self._is_expected_language(current_text):
                 return current_text

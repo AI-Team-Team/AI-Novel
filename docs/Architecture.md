@@ -261,10 +261,10 @@ Ensures output consistency through a multi-step process with robust retry bounda
 2. **Confidence Ratio**: Calculates CJK/Latin character ratio on the name-excluded text.
 3. **Threshold Check**: Uses direct thresholds (Chinese ≥ 20% CJK; English ≥ 60% Latin with ≤ 10% CJK) to determine if text is in the expected language.
 4. **Safety Net**: For English mode, only triggers rewrite if CJK content exceeds 30% after name exclusion.
-5. **Bounded LLM Rewrite Loop**: If the language check fails, the system executes an automatic LLM-driven rewrite loop with up to **2 attempts**:
+5. **Bounded LLM Rewrite Loop**: If the language check fails, the system executes an automatic LLM-driven rewrite loop. The maximum number of attempts is fully configurable via `language_rewrite_max_attempts` inside `config.yaml` (default: 2):
    * The first attempt uses a standard translation/rewrite instruction prompt.
-   * If the first output still fails the confidence check, a second attempt is triggered using a highly strict **escalation prompt** explicitly demanding the pure expected language and the elimination of foreign mixed characters.
-   * If both attempts fail to meet the confidence thresholds, the system raises a `RuntimeError` (fail-fast boundary) to prevent corrupted text from entering the draft.
+   * Any subsequent attempts (up to the configured limit) use a highly strict **escalation prompt** explicitly demanding the pure expected language and the elimination of foreign mixed characters.
+   * If all attempts fail to meet the confidence thresholds, the system raises a `RuntimeError` (fail-fast boundary) to prevent corrupted text from entering the draft.
 6. **Critic Review**: Language consistency is also part of the Critic's system prompt responsibilities.
 
 ## Customization
