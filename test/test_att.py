@@ -136,5 +136,50 @@ class TestATT(unittest.TestCase):
         self.assertTrue(dummy_tool_called)
         self.assertEqual(final_answer, "Success!")
 
+    def test_sibling_talk_permission_tool(self):
+        """Verify that sibling talk permissions can be dynamically set by parents only."""
+        from att.tools import get_default_tools
+        
+        parent_team = self.manager.create_agent_team(creator=self.root_ai, member_count=3)
+        child_team = self.manager.create_agent_team(creator=parent_team, member_count=3)
+        unrelated_team = self.manager.create_agent_team(creator=self.root_ai, member_count=3)
+        
+        # Setup context and register tools on parent
+        context = {"att_manager": self.manager}
+        parent_team.tools = get_default_tools(context, parent_team)
+        unrelated_team.tools = get_default_tools(context, unrelated_team)
+        
+        # 1. Unrelated team attempts to grant child_team sibling talk -> fails
+        set_sibling_tool = unrelated_team.tools["set_sibling_talk"]
+        res = set_sibling_tool(child_team.team_id, True)
+        self.assertTrue("Error" in res)
+        self.assertFalse(child_team.communication_rules["allow_sibling_talk"])
+        
+        # 2. Parent team grants child_team sibling talk -> succeeds
+        set_sibling_tool = parent_team.tools["set_sibling_talk"]
+        res = set_sibling_tool(child_team.team_id, True)
+        self.assertTrue("Successfully" in res)
+        self.assertTrue(child_team.communication_rules["allow_sibling_talk"])
+
+    def test_discussion_inbox_alerts_injection(self):
+        """Verify that inbox messages are prepended to discussion prompts."""
+        team = self.manager.create_agent_team(creator=self.root_ai, member_count=3)
+        team.receive_message({"from": "Supervisor", "reason": "Anomaly in chapter 1"})
+        
+        # We mock execute_react_step to verify that prompt contains the inbox signal
+        observed_prompt = ""
+        def mock_execute_react_step(agent, prompt, system_instructions):
+            nonlocal observed_prompt
+            observed_prompt = prompt
+            return "Mocked Answer"
+            
+        team.execute_react_step = mock_execute_react_step
+        self.manager.execute_team_discussion(team, "Start debate", rounds=1)
+        
+        self.assertIn("UNRESOLVED INBOX ALERTS & ESCALATIONS", observed_prompt)
+        self.assertIn("Anomaly in chapter 1", observed_prompt)
+        # Message inbox should be cleared after discussion
+        self.assertEqual(len(team.message_inbox), 0)
+
 if __name__ == "__main__":
     unittest.main()

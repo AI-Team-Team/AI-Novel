@@ -144,11 +144,42 @@ def get_default_tools(context: Dict[str, Any], caller_node: Any) -> Dict[str, To
         except Exception as e:
             return f"Escalation Error: {e}"
 
+    def set_sibling_talk(child_id: str, allow: bool = True) -> str:
+        """Sets sibling talk permission for a child team. Arguments: child_id (str), allow (bool)"""
+        if not att_manager:
+            return "Error: ATTManager not available in tools context."
+        
+        if child_id not in att_manager.teams:
+            return f"Error: Child team '{child_id}' is not registered."
+            
+        child = att_manager.teams[child_id]
+        
+        from att.att_core import Agent, AgentTeam
+        actual_team = None
+        if isinstance(caller_node, AgentTeam):
+            actual_team = caller_node
+        elif isinstance(caller_node, Agent):
+            for team in att_manager.teams.values():
+                if caller_node in team.members:
+                    actual_team = team
+                    break
+                    
+        if not actual_team:
+            return "Error: Could not resolve the active AgentTeam for the caller."
+            
+        parent = child.parent_team or att_manager.find_parent_team(child)
+        if not parent or parent.team_id != actual_team.team_id:
+            return f"Error: Caller team '{actual_team.team_id}' is not the parent of child '{child_id}'."
+            
+        child.communication_rules["allow_sibling_talk"] = bool(allow)
+        return f"Successfully set sibling talk for child team '{child_id}' to {allow}."
+
     return {
         "query_sqlite": Tool("query_sqlite", "Queries the SQLite database directly with sql_command (str).", query_sqlite),
         "search_faiss": Tool("search_faiss", "Performs semantic vector search on FAISS indices using query_text (str) and limit (int).", search_faiss),
         "read_file_chunk": Tool("read_file_chunk", "Reads a specific paginated chunk of a file using path (str), start_line (int), and optionally end_line (int).", read_file_chunk),
         "read_file_tail": Tool("read_file_tail", "Reads the last line_count (int) lines of a file using path (str).", read_file_tail),
         "dispatch_subagent": Tool("dispatch_subagent", "Spawns a recursive child AT under the ATT tree to execute a specialized task with name (str), role (str), task (str).", dispatch_subagent),
-        "delegate_escalation": Tool("delegate_escalation", "Escalates objective upward in the ATT lineage tree with objective (str) and rationale (str).", delegate_escalation)
+        "delegate_escalation": Tool("delegate_escalation", "Escalates objective upward in the ATT lineage tree with objective (str) and rationale (str).", delegate_escalation),
+        "set_sibling_talk": Tool("set_sibling_talk", "Allows parent teams to dynamically set sibling communication permission for their child team. Arguments: child_id (str), allow (bool).", set_sibling_talk)
     }

@@ -130,21 +130,32 @@ class AgentTeam:
                         tool_name = action_match.group(1).strip()
                         tool_args_str = action_match.group(2).strip()
 
-                        # Parse arguments safely (splitting by comma, stripping quotes)
+                        # Parse arguments safely (splitting by comma, stripping quotes, evaluating structures)
                         def parse_args(args_str):
                             if not args_str:
                                 return [], {}
-                            args = []
-                            kwargs = {}
-                            parts = args_str.split(",")
-                            for p in parts:
-                                p = p.strip()
-                                if "=" in p:
-                                    k, v = p.split("=", 1)
-                                    kwargs[k.strip()] = v.strip().strip("'\"")
+                            import ast
+                            try:
+                                # Wrap in tuple and evaluate using ast.literal_eval
+                                parsed = ast.literal_eval(f"({args_str})")
+                                if isinstance(parsed, tuple):
+                                    args = list(parsed)
                                 else:
-                                    args.append(p.strip().strip("'\""))
-                            return args, kwargs
+                                    args = [parsed]
+                                return args, {}
+                            except Exception:
+                                # Fallback split if literal_eval fails
+                                args = []
+                                kwargs = {}
+                                parts = args_str.split(",")
+                                for p in parts:
+                                    p = p.strip()
+                                    if "=" in p:
+                                        k, v = p.split("=", 1)
+                                        kwargs[k.strip()] = v.strip().strip("'\"")
+                                    else:
+                                        args.append(p.strip().strip("'\""))
+                                return args, kwargs
 
                         args, kwargs = parse_args(tool_args_str)
 
@@ -411,12 +422,29 @@ class ATTManager:
     def execute_team_discussion(self, team: AgentTeam, prompt: str, rounds: int = 2) -> str:
         """Executes a multi-agent debate session inside the AT, monitored by the Supervisor."""
         self.logger.info(f"Executing discussion in team {team.team_id} (rounds={rounds})...")
+        
+        # Inject unresolved inbox alerts & escalations if any exist
+        inbox_context = ""
+        if team.message_inbox:
+            inbox_lines = []
+            for msg in team.message_inbox:
+                inbox_lines.append(f"- **From [{msg.get('from', 'Unknown')}]**: {msg.get('reason') or msg.get('objective') or str(msg)}")
+            inbox_context = (
+                f"\n\n### UNRESOLVED INBOX ALERTS & ESCALATIONS\n"
+                f"Your team has received the following signals from your descendants or supervisor:\n"
+                f"{chr(10).join(inbox_lines)}\n"
+                f"Please address or incorporate these alerts into your decision-making."
+            )
+            # Clear processed messages
+            team.message_inbox = []
+
         dialog_history = []
+        full_prompt = f"{prompt}{inbox_context}"
         
         for r in range(1, rounds + 1):
             for agent in team.members:
                 agent_prompt = (
-                    f"Task: {prompt}\n\n"
+                    f"Task: {full_prompt}\n\n"
                     f"--- Discussion History ---\n"
                     f"{chr(10).join(dialog_history) if dialog_history else '(None)'}\n\n"
                     f"Your Turn (Speak in your role. Keep it concise):"
