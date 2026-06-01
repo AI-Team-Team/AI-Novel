@@ -54,13 +54,13 @@ workflow:
 # Experimental AI Autonomy & Delegation
 # ==========================================
 autonomy:
-  enable_autonomy_suite: false          # Master toggle to enable/disable entire autonomy suite
-  enable_autonomous_queries: false      # Global toggle for tool use loops
-  enable_dynamic_delegation: false      # Global toggle for spawning subagents
+  enable_autonomy_suite: True           # Master toggle to enable/disable entire autonomy suite
+  enable_autonomous_queries: True       # Global toggle for tool use loops
+  enable_dynamic_delegation: True       # Global toggle for spawning subagents
   max_delegation_depth: 2               # Depth 0 (root) -> Depth 1 (child) -> Depth 2 (grandchild)
-  max_subagent_team_size: 3             # Max sibling team size
-  subagent_discussion_rounds: 1         # Discussion rounds inside subagent panels
+  max_subagent_team_size: 5             # Max sibling team size
+  subagent_discussion_rounds: 2         # Discussion rounds inside subagent panels
   large_file_threshold_kb: 50           # Files larger than this return outline warning
-  max_chunk_lines: 100                  # Paginated lines per read request
-  enable_budget_monitoring: false       # Toggle to enable/disable supervisor budget monitoring
-  total_token_budget_usd: 1.00          # Supervisor termination budget cap per session
+  max_chunk_lines: 200                  # Paginated lines per read request
+  enable_budget_monitoring: True        # Toggle to enable/disable supervisor budget monitoring
+  total_token_budget_usd: 2.00          # Supervisor termination budget cap per session

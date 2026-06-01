@@ -19,6 +19,11 @@ Any resolved issues should not be stored in this document.
 1. FAISS rollback still depends on in-memory index cloning; for very large indices this may be memory-heavy.
 2. Conflict diagnostics now include diff paths and reason labels, but root-cause graphing is still basic.
 3. Language guard now has confidence scoring (and excludes known character names), but still uses rewrite fallback as the final correction path.
+4. Chapter planning references `prompt.planner_task`, but the i18n resources do not currently define that key; generated planning prompts may include `MISSING_RESOURCE_prompt.planner_task`.
+5. `ENABLE_AUTONOMY_SUITE` is documented as the master autonomy toggle, but `initialize_autonomy()` currently initializes ATT, DMC, and gated reading regardless of that flag.
+6. The Database Management Committee only audits direct SQL access through ATT tools; normal `MemoryManager` SQLite writes are not intercepted despite documentation implying full SQLite execution coverage.
+7. FAISS recovery is inconsistent when the index file is missing or cannot be loaded: rebuild currently returns early when `self.index` is `None`, limiting recovery from `vector_metadata`.
+8. The Chinese writer prompt contains mixed-language wording (`感官细节 and 深度人物视角`), which weakens the language consistency contract.
 
 ## Future Plans
 
