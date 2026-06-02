@@ -20,15 +20,32 @@ class DashboardLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            msg = self.format(record)
+            level = record.levelname
+            msg = record.getMessage()
+            
             # Remove raw prompt/response logs from real-time display to keep it elegant
             if "ReAct step" in msg or "generate_content" in msg or "Response:" in msg or "PROMPT BEGIN" in msg or "RESPONSE BEGIN" in msg:
-                # Truncate and denote that it is logged to file
                 first_line = msg.split("\n")[0]
                 if len(first_line) > 100:
                     first_line = first_line[:97] + "..."
                 msg = f"{first_line} [dim](detailed log stored to file)[/dim]"
-            self.dashboard.add_log(msg)
+            
+            timestamp = time.strftime("%H:%M:%S")
+            if level == "WARNING":
+                log_fmt = f"[dim]{timestamp}[/dim] ⚠️  [bold yellow]WARNING[/bold yellow]: {msg}"
+            elif level in ("ERROR", "CRITICAL"):
+                log_fmt = f"[dim]{timestamp}[/dim] ❌ [bold red]ERROR[/bold red]: {msg}"
+            else:
+                if "Successfully" in msg or "Success" in msg or "✔" in msg:
+                    log_fmt = f"[dim]{timestamp}[/dim] [bold green]✔ {msg}[/bold green]"
+                elif "Spawning" in msg or "spawned" in msg:
+                    log_fmt = f"[dim]{timestamp}[/dim] [cyan]👥 {msg}[/cyan]"
+                elif "Saved" in msg:
+                    log_fmt = f"[dim]{timestamp}[/dim] [dim]💾 {msg}[/dim]"
+                else:
+                    log_fmt = f"[dim]{timestamp}[/dim] [white]{msg}[/white]"
+            
+            self.dashboard.add_log(log_fmt)
         except Exception:
             self.handleError(record)
 
@@ -146,12 +163,22 @@ class ConsoleDashboard:
             (progress_text, "white")
         )
 
+        # Spinner - only animate spinner if running, hide if finished/error/ready
+        spinner = None
+        if "Finished" not in self.active_stage and "Error" not in self.active_stage and "Ready" not in self.active_stage:
+            spinner = Spinner("dots", style="green")
+
         header_table = Table.grid(expand=True)
         header_table.add_column(justify="left", ratio=1)
         header_table.add_column(justify="right", ratio=1)
-        header_table.add_row(header_text, stage_text)
         
-        layout["header"].update(Panel(header_table, style="cyan"))
+        if spinner:
+            right_content = Columns([stage_text, spinner])
+            header_table.add_row(header_text, right_content)
+        else:
+            header_table.add_row(header_text, stage_text)
+        
+        layout["header"].update(Panel(header_table, border_style="grey37"))
 
         # 2. Dynamic ATT Tree Lineage
         tree = Tree("[bold royal_blue1]📁 Root AI Level 0 (Architect)[/bold royal_blue1]")
@@ -197,7 +224,7 @@ class ConsoleDashboard:
             tree,
             title="[bold blue]Lineage Tree of Active ATTs[/bold blue]",
             title_align="left",
-            border_style="blue",
+            border_style="grey37",
             expand=True
         )
         layout["left"].update(tree_panel)
@@ -214,7 +241,7 @@ class ConsoleDashboard:
             activities_text,
             title="[bold yellow]Real-Time ReAct Agent Loop[/bold yellow]",
             title_align="left",
-            border_style="yellow",
+            border_style="grey37",
             expand=True
         )
         layout["activities"].update(activities_panel)
@@ -231,7 +258,7 @@ class ConsoleDashboard:
             logs_text,
             title="[bold green]System & Memory Log[/bold green]",
             title_align="left",
-            border_style="green",
+            border_style="grey37",
             expand=True
         )
         layout["logs"].update(logs_panel)
