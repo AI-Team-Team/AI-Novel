@@ -13,7 +13,12 @@ class Agent:
 
     def launch_att(self, manager: 'ATTManager', member_count: int = 3, roles_and_presets: Optional[List[Tuple[str, str]]] = None, system_instructions: str = "", team_purpose: str = "Unspecified team purpose") -> 'AgentTeam':
         """Allows this agent to launch a dynamic sub-team (Level 2+)."""
-        return manager.create_agent_team(creator=self, member_count=member_count, roles_and_presets=roles_and_presets, system_instructions=system_instructions, team_purpose=team_purpose)
+        child = manager.create_agent_team(creator=self, member_count=member_count, roles_and_presets=roles_and_presets, system_instructions=system_instructions, team_purpose=team_purpose)
+        for team in manager.teams.values():
+            if self in team.members:
+                child.chapter_num = team.chapter_num
+                break
+        return child
 
 
 class AgentTeam:
@@ -22,6 +27,8 @@ class AgentTeam:
         self.creator = creator
         self.preset_name = preset_name
         self.team_purpose = team_purpose
+        self.chapter_num: Optional[int] = None
+        self.status_map: Dict[str, str] = {}
         self.members: List[Agent] = []
         
         self.child_teams: List['AgentTeam'] = []
@@ -52,7 +59,9 @@ class AgentTeam:
 
     def launch_att(self, manager: 'ATTManager', member_count: int = 3, roles_and_presets: Optional[List[Tuple[str, str]]] = None, system_instructions: str = "", team_purpose: str = "Unspecified team purpose") -> 'AgentTeam':
         """Allows any active team to recursively launch their own child AT."""
-        return manager.create_agent_team(creator=self, member_count=member_count, roles_and_presets=roles_and_presets, system_instructions=system_instructions, team_purpose=team_purpose)
+        child = manager.create_agent_team(creator=self, member_count=member_count, roles_and_presets=roles_and_presets, system_instructions=system_instructions, team_purpose=team_purpose)
+        child.chapter_num = self.chapter_num
+        return child
 
     def receive_message(self, message: Dict[str, Any]):
         self.message_inbox.append(message)
@@ -62,6 +71,12 @@ class AgentTeam:
         """Executes a ReAct loop for a single agent inside the AT."""
         if not agent.llm_client:
             return "Error: Agent has no LLM client configured."
+
+        if not hasattr(self, "status_map"):
+            self.status_map = {}
+        self.status_map[agent.name] = "Thinking..."
+        if manager and hasattr(manager, "dashboard") and manager.dashboard:
+            manager.dashboard.refresh()
 
         peer_context = ""
         if manager:
@@ -90,138 +105,234 @@ class AgentTeam:
             f"{model_options}\n"
         )
 
-        # Check if we have active tools to formulate the ReAct system prompt
-        if getattr(self, "tools", None):
-            tools_desc = []
-            for t_name, tool in self.tools.items():
-                tools_desc.append(f"- **{t_name}**: {tool.description}")
-            tools_list_str = "\n".join(tools_desc)
+        try:
+            # Check if we have active tools to formulate the ReAct system prompt
+            if getattr(self, "tools", None):
+                tools_desc = []
+                for t_name, tool in self.tools.items():
+                    tools_desc.append(f"- **{t_name}**: {tool.description}")
+                tools_list_str = "\n".join(tools_desc)
 
-            react_system_instruction = (
-                f"{system_instruction}\n\n"
-                f"{identity_header}\n"
-                f"### AVAILABLE TOOLS\n"
-                f"{tools_list_str}\n\n"
-                f"### REACT FORMAT INSTRUCTIONS\n"
-                f"When executing your task, you can reason and use tools step-by-step. Use the following format:\n"
-                f"Thought: <your reasoning about the next step>\n"
-                f"Action: <tool_name>(<arguments_separated_by_commas_or_kwargs>)\n"
-                f"Observation: <the tool output will appear here>\n\n"
-                f"You can repeat the Thought/Action/Observation loop multiple times if needed. "
-                f"Once you have all the necessary information, or if you do not need to use any tools, output exactly:\n"
-                f"Final Answer: <your final answer here>"
-            )
+                react_system_instruction = (
+                    f"{system_instruction}\n\n"
+                    f"{identity_header}\n"
+                    f"### AVAILABLE TOOLS\n"
+                    f"{tools_list_str}\n\n"
+                    f"### REACT FORMAT INSTRUCTIONS\n"
+                    f"When executing your task, you can reason and use tools step-by-step. Use the following format:\n"
+                    f"Thought: <your reasoning about the next step>\n"
+                    f"Action: <tool_name>(<arguments_separated_by_commas_or_kwargs>)\n"
+                    f"Observation: <the tool output will appear here>\n\n"
+                    f"You can repeat the Thought/Action/Observation loop multiple times if needed. "
+                    f"Once you have all the necessary information, or if you do not need to use any tools, output exactly:\n"
+                    f"Final Answer: <your final answer here>"
+                )
 
-            # ReAct Execution Loop
-            current_prompt = prompt
-            react_history = []
-            
-            for step in range(max_steps):
+                # ReAct Execution Loop
+                current_prompt = prompt
+                react_history = []
+                
+                for step in range(max_steps):
+                    try:
+                        self.status_map[agent.name] = f"Thinking (Step {step+1}/{max_steps})..."
+                        if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                            manager.dashboard.refresh()
+
+                        full_prompt = current_prompt
+                        if react_history:
+                            full_prompt = (
+                                f"{current_prompt}\n\n"
+                                f"--- ReAct Iteration History ---\n"
+                                f"{chr(10).join(react_history)}\n"
+                                f"Next step:"
+                            )
+
+                        response = agent.llm_client.generate(
+                            prompt=full_prompt,
+                            system_instruction=react_system_instruction,
+                            temperature=0.3
+                        ).strip()
+
+                        self.logger.info(f"Agent {agent.name} ReAct step {step+1} response:\n{response}")
+
+                        # Log ReAct LLM step to dynamic ATT split log
+                        if manager and hasattr(manager, "discussion_logger") and manager.discussion_logger:
+                            log_content = (
+                                f"AGENT: {agent.name}\n"
+                                f"ROLE: {agent.role}\n"
+                                f"STEP: {step+1}\n"
+                                f"--- SYSTEM INSTRUCTION BEGIN ---\n"
+                                f"{react_system_instruction}\n"
+                                f"--- SYSTEM INSTRUCTION END ---\n"
+                                f"--- PROMPT BEGIN ---\n"
+                                f"{full_prompt}\n"
+                                f"--- PROMPT END ---\n"
+                                f"--- RESPONSE BEGIN ---\n"
+                                f"{response}\n"
+                                f"--- RESPONSE END ---\n"
+                            )
+                            manager.discussion_logger.append_att(
+                                team_id=self.team_id,
+                                title=f"ReAct LLM Step | {agent.name} ({agent.role}) Step {step+1}",
+                                content=log_content,
+                                chapter_num=self.chapter_num
+                            )
+
+                        # Extract Thought / Action / Final Answer for Dashboard
+                        if "Final Answer:" in response:
+                            final_ans_content = response.split("Final Answer:", 1)[1].strip()
+                            if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                                manager.dashboard.add_activity(agent.name, "Final Answer", final_ans_content)
+                            
+                            parts = response.split("Final Answer:", 1)
+                            return parts[1].strip()
+
+                        import re
+                        thought_match = re.search(r"Thought:\s*(.*)", response, re.IGNORECASE)
+                        if thought_match:
+                            thought_content = thought_match.group(1).split("Action:")[0].strip()
+                            if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                                manager.dashboard.add_activity(agent.name, "Thought", thought_content)
+
+                        # Parse and Execute Action
+                        action_match = re.search(r"Action:\s*(\w+)\((.*)\)", response, re.IGNORECASE)
+                        if action_match:
+                            tool_name = action_match.group(1).strip()
+                            tool_args_str = action_match.group(2).strip()
+
+                            # Parse arguments safely
+                            def parse_args(args_str):
+                                if not args_str:
+                                    return [], {}
+                                import ast
+                                try:
+                                    parsed = ast.literal_eval(f"({args_str})")
+                                    if isinstance(parsed, tuple):
+                                        args = list(parsed)
+                                    else:
+                                        args = [parsed]
+                                    return args, {}
+                                except Exception:
+                                    args = []
+                                    kwargs = {}
+                                    parts = args_str.split(",")
+                                    for p in parts:
+                                        p = p.strip()
+                                        if "=" in p:
+                                            k, v = p.split("=", 1)
+                                            kwargs[k.strip()] = v.strip().strip("'\"")
+                                        else:
+                                            args.append(p.strip().strip("'\""))
+                                    return args, kwargs
+
+                            args, kwargs = parse_args(tool_args_str)
+
+                            if tool_name in self.tools:
+                                tool_obj = self.tools[tool_name]
+                                self.logger.info(f"Executing tool: {tool_name} with args={args}, kwargs={kwargs}")
+                                
+                                self.status_map[agent.name] = f"Executing Tool: {tool_name}"
+                                if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                                    manager.dashboard.add_activity(agent.name, "Action", f"{tool_name}({tool_args_str})")
+                                    manager.dashboard.refresh()
+
+                                observation = tool_obj(*args, **kwargs)
+                                
+                                self.status_map[agent.name] = "Thinking..."
+                                if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                                    # Show truncated observation
+                                    obs_summary = str(observation)
+                                    if len(obs_summary) > 80:
+                                        obs_summary = obs_summary[:77] + "..."
+                                    manager.dashboard.add_activity(agent.name, "Observation", obs_summary)
+                                    manager.dashboard.refresh()
+                            else:
+                                observation = f"Error: Tool '{tool_name}' is not registered."
+                                if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                                    manager.dashboard.add_activity(agent.name, "Observation", observation)
+
+                            self.logger.info(f"Tool {tool_name} observation: {observation}")
+                            
+                            # Log tool call and observation to split logger
+                            if manager and hasattr(manager, "discussion_logger") and manager.discussion_logger:
+                                log_content = (
+                                    f"AGENT: {agent.name}\n"
+                                    f"ROLE: {agent.role}\n"
+                                    f"ACTION: {tool_name}({tool_args_str})\n"
+                                    f"OBSERVATION:\n{observation}\n"
+                                )
+                                manager.discussion_logger.append_att(
+                                    team_id=self.team_id,
+                                    title=f"ReAct Tool Call | {agent.name} ({agent.role})",
+                                    content=log_content,
+                                    chapter_num=self.chapter_num
+                                )
+
+                            # Add step to history
+                            react_history.append(f"Thought: Analyzing task.")
+                            react_history.append(f"Action: {tool_name}({tool_args_str})")
+                            react_history.append(f"Observation: {observation}")
+                        else:
+                            # LLM didn't use Action format or Final Answer format
+                            if step == max_steps - 1:
+                                return response
+                            react_history.append(response)
+                            react_history.append("Observation: Please output either 'Action: tool_name(args)' or 'Final Answer: <content>'.")
+                    except Exception as e:
+                        self.logger.error(f"Error in ReAct step {step+1} for agent {agent.name}: {e}")
+                        return f"Error executing task during ReAct loop: {e}"
+
+                return "Error: ReAct loop exceeded maximum steps without producing a Final Answer."
+
+            else:
+                # Fallback to standard single step call if no tools are bound
+                full_system_instruction = (
+                    f"{system_instruction}\n\n"
+                    f"{identity_header}\n"
+                    f"Output exactly 'Final Answer: <content>' when complete."
+                )
+
                 try:
-                    full_prompt = current_prompt
-                    if react_history:
-                        full_prompt = (
-                            f"{current_prompt}\n\n"
-                            f"--- ReAct Iteration History ---\n"
-                            f"{chr(10).join(react_history)}\n"
-                            f"Next step:"
-                        )
-
                     response = agent.llm_client.generate(
-                        prompt=full_prompt,
-                        system_instruction=react_system_instruction,
+                        prompt=prompt,
+                        system_instruction=full_system_instruction,
                         temperature=0.3
                     ).strip()
+                    
+                    if manager and hasattr(manager, "discussion_logger") and manager.discussion_logger:
+                        log_content = (
+                            f"AGENT: {agent.name}\n"
+                            f"ROLE: {agent.role}\n"
+                            f"--- SYSTEM INSTRUCTION BEGIN ---\n"
+                            f"{full_system_instruction}\n"
+                            f"--- SYSTEM INSTRUCTION END ---\n"
+                            f"--- PROMPT BEGIN ---\n"
+                            f"{prompt}\n"
+                            f"--- PROMPT END ---\n"
+                            f"--- RESPONSE BEGIN ---\n"
+                            f"{response}\n"
+                            f"--- RESPONSE END ---\n"
+                        )
+                        manager.discussion_logger.append_att(
+                            team_id=self.team_id,
+                            title=f"Direct LLM Call | {agent.name} ({agent.role})",
+                            content=log_content,
+                            chapter_num=self.chapter_num
+                        )
 
-                    self.logger.info(f"Agent {agent.name} ReAct step {step+1} response:\n{response}")
-
-                    # Check for Final Answer
                     if "Final Answer:" in response:
-                        parts = response.split("Final Answer:", 1)
-                        return parts[1].strip()
-
-                    # Parse and Execute Action
-                    import re
-                    # Look for "Action: tool_name(args)"
-                    action_match = re.search(r"Action:\s*(\w+)\((.*)\)", response, re.IGNORECASE)
-                    if action_match:
-                        tool_name = action_match.group(1).strip()
-                        tool_args_str = action_match.group(2).strip()
-
-                        # Parse arguments safely (splitting by comma, stripping quotes, evaluating structures)
-                        def parse_args(args_str):
-                            if not args_str:
-                                return [], {}
-                            import ast
-                            try:
-                                # Wrap in tuple and evaluate using ast.literal_eval
-                                parsed = ast.literal_eval(f"({args_str})")
-                                if isinstance(parsed, tuple):
-                                    args = list(parsed)
-                                else:
-                                    args = [parsed]
-                                return args, {}
-                            except Exception:
-                                # Fallback split if literal_eval fails
-                                args = []
-                                kwargs = {}
-                                parts = args_str.split(",")
-                                for p in parts:
-                                    p = p.strip()
-                                    if "=" in p:
-                                        k, v = p.split("=", 1)
-                                        kwargs[k.strip()] = v.strip().strip("'\"")
-                                    else:
-                                        args.append(p.strip().strip("'\""))
-                                return args, kwargs
-
-                        args, kwargs = parse_args(tool_args_str)
-
-                        if tool_name in self.tools:
-                            tool_obj = self.tools[tool_name]
-                            self.logger.info(f"Executing tool: {tool_name} with args={args}, kwargs={kwargs}")
-                            observation = tool_obj(*args, **kwargs)
-                        else:
-                            observation = f"Error: Tool '{tool_name}' is not registered."
-
-                        self.logger.info(f"Tool {tool_name} observation: {observation}")
-                        
-                        # Add step to history
-                        react_history.append(f"Thought: Analyzing task.")
-                        react_history.append(f"Action: {tool_name}({tool_args_str})")
-                        react_history.append(f"Observation: {observation}")
-                    else:
-                        # LLM didn't use Action format or Final Answer format
-                        if step == max_steps - 1:
-                            return response
-                        react_history.append(response)
-                        react_history.append("Observation: Please output either 'Action: tool_name(args)' or 'Final Answer: <content>'.")
+                        final_ans_content = response.split("Final Answer:", 1)[1].strip()
+                        if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                            manager.dashboard.add_activity(agent.name, "Final Answer", final_ans_content)
+                        return response.split("Final Answer:", 1)[1].strip()
+                    return response
                 except Exception as e:
-                    self.logger.error(f"Error in ReAct step {step+1} for agent {agent.name}: {e}")
-                    return f"Error executing task during ReAct loop: {e}"
-
-            return "Error: ReAct loop exceeded maximum steps without producing a Final Answer."
-
-        else:
-            # Fallback to standard single step call if no tools are bound
-            full_system_instruction = (
-                f"{system_instruction}\n\n"
-                f"{identity_header}\n"
-                f"Output exactly 'Final Answer: <content>' when complete."
-            )
-
-            try:
-                response = agent.llm_client.generate(
-                    prompt=prompt,
-                    system_instruction=full_system_instruction,
-                    temperature=0.3
-                ).strip()
-                if "Final Answer:" in response:
-                    return response.split("Final Answer:", 1)[1].strip()
-                return response
-            except Exception as e:
-                self.logger.error(f"Agent {agent.name} execution error: {e}")
-                return f"Error executing task: {e}"
+                    self.logger.error(f"Agent {agent.name} execution error: {e}")
+                    return f"Error executing task: {e}"
+        finally:
+            self.status_map[agent.name] = "Idle"
+            if manager and hasattr(manager, "dashboard") and manager.dashboard:
+                manager.dashboard.refresh()
 
 
 class NegotiationBroker:
@@ -379,6 +490,16 @@ class ATTManager:
         assert member_count >= min_size, f"An Agent Team must contain at least {min_size} members to debate properly."
         
         team = AgentTeam(creator=creator, preset_name=preset_name, team_purpose=team_purpose)
+        
+        # Propagate chapter_num from creator if possible
+        if isinstance(creator, AgentTeam):
+            team.chapter_num = creator.chapter_num
+        elif isinstance(creator, Agent):
+            for t in self.teams.values():
+                if creator in t.members:
+                    team.chapter_num = t.chapter_num
+                    break
+
         members = []
         
         if roles_and_presets:
@@ -472,4 +593,25 @@ class ATTManager:
         if not is_healthy:
             self.supervisor.report_anomaly(team, reason, self)
             
+        # Log final synthesized transcript to dynamic ATT split log
+        if hasattr(self, "discussion_logger") and self.discussion_logger:
+            log_title = f"Synthesized Debate Transcript | {team.team_id} ({team.preset_name}) - Rounds: {rounds}"
+            log_content = (
+                f"TEAM_ID: {team.team_id}\n"
+                f"PRESET_NAME: {team.preset_name}\n"
+                f"PURPOSE: {team.team_purpose}\n"
+                f"PROMPT: {prompt}\n"
+                f"--- SYNTHESIZED TRANSCRIPT BEGIN ---\n"
+                f"{transcript}\n"
+                f"--- SYNTHESIZED TRANSCRIPT END ---\n"
+                f"AUDIT STATUS: {'Healthy' if is_healthy else 'Anomaly Detected'}\n"
+                f"AUDIT REASON: {reason}\n"
+            )
+            self.discussion_logger.append_att(
+                team_id=team.team_id,
+                title=log_title,
+                content=log_content,
+                chapter_num=team.chapter_num
+            )
+
         return transcript

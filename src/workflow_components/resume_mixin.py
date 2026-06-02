@@ -301,6 +301,9 @@ class WorkflowResumeMixin:
         if count <= 0:
             self.logger.info("Count <= 0. Skip continuous generation.")
             return
+
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.total_auto_chapters = count
         self._validate_discussion_index_integrity()
         invalid_chapters, invalid_global = self._validate_runtime_artifacts_integrity()
         for path, reason in invalid_global:
@@ -314,6 +317,9 @@ class WorkflowResumeMixin:
 
         for i in range(count):
             current_chapter = start_chapter + i
+            if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+                self.att_manager.dashboard.current_auto_chapter = i + 1
+                self.att_manager.dashboard.refresh()
             self.logger.info(f"--- Processing Chapter {current_chapter} ---")
             
             max_retries = getattr(config, "AUTO_GENERATION_MAX_RETRIES", 3)

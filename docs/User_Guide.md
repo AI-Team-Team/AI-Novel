@@ -165,7 +165,29 @@ If you change your Embedding model or need to refresh the vector store:
 python src/main.py --rebuild-vectors
 ```
 
-## 6. Customizing Prompts
+## 6. Real-Time Terminal Dashboard & Logging
+
+To provide an elite, premium user experience, the system replaces cluttered raw console outputs with a gorgeous real-time visual interface and an advanced multi-gated logging system.
+
+### Full-Screen Alternate Buffer Dashboard (`rich.live`)
+
+When running workflow commands (`--start`, `--plan`, `--write`, `--scan`, `--auto`), the system launches a gorgeous, interactive full-screen application inside your terminal's alternate screen buffer (similar to `top` or `vim`):
+
+* **Workspace Alternate Buffer**: Runs full-screen and perfectly restores your previous screen output upon completion, protecting your terminal scroll history.
+* **Header Bar**: Tracks current high-level operations (e.g. World Building, Chapter Planning, Prose Writing, Reviewing) and overall chapter auto-progress.
+* **Lineage Tree of Active ATTs (Left Pane)**: Visualizes the active parent and child Agent Teams (ATs) spawned dynamically, highlighting active agents and their real-time execution states (e.g., `Idle`, `Thinking...`, `Executing Tool: tool_name`).
+* **Real-Time Agent Terminal (Right Top Pane)**: Displays scrolling agent thoughts (`🧠`), actions (`⚙️`), observations (`👁️`), and final answers (`✨`) in real time. **All core workflow AI agents** (Architect, Planner, Writer, Critic, Scanner) are fully integrated to display their dynamic activities in real-time alongside dynamic ATT debate agents!
+* **System & Memory Log (Right Bottom Pane)**: Captures and scrolls general runtime messages cleanly in a designated panel, dynamically silencing background outputs to prevent screen garbling.
+
+### Divided Dynamic ATT Logging
+
+While keeping the terminal output clean and visually stunning, the system records complete, un-truncated traces on disk for absolute transparency and debugging:
+
+1. **Isolated Team Logs**: Every dynamically created Agent Team records its entire debate history and intermediate ReAct steps under its own dedicated file at `novel/Discussion_Log/att/{team_id}.log`.
+2. **Chapter-Specific Logs**: Debates are automatically grouped and appended to `novel/Discussion_Log/chapter_{chapter_num}_Discussion.log` based on the active chapter.
+3. **Global Trace**: All activities are logged chronologically inside `novel/Discussion_Log/All_Discussion.log`.
+
+## 7. Customizing Prompts
 
 You can refine the AI's behavior without changing Python code by editing the files in `i18n/AI/`:
 

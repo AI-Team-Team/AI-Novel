@@ -16,6 +16,11 @@ class WritingWorkflowMixin:
             f"{contract_label}:\n{guide_content}\n\n"
             f"{chapter_label}:\n{chapter_text}\n\n{review_task}\n{output_format}\n{self._language_rule()}"
         )
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = f"Reviewing Chapter {chapter_num}"
+            self.att_manager.dashboard.add_activity("Critic", "Thought", f"Reviewing prose draft against chapter guide for alignment...")
+            self.att_manager.dashboard.refresh()
+
         review = self.critic_client.generate(
             prompt=critic_prompt,
             system_instruction=prompts["critic"],
@@ -49,6 +54,7 @@ class WritingWorkflowMixin:
             preset_name="editorial",
             system_instructions=preset["system_instructions"]
         )
+        team.chapter_num = chapter_num
 
         prompt = (
             f"Please review and revise the draft for Chapter {chapter_num}.\n\n"
@@ -162,6 +168,11 @@ class WritingWorkflowMixin:
             f"{semantic_label}:\n{semantic_context}\n"
             f"{write_instruction}"
         )
+
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = f"Writing Chapter {chapter_num}"
+            self.att_manager.dashboard.add_activity("Writer", "Thought", f"Generating draft prose for Chapter {chapter_num} based on Guide...")
+            self.att_manager.dashboard.refresh()
 
         try:
             chapter_text = self.writer_client.generate(

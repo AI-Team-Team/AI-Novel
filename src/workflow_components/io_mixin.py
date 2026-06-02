@@ -56,6 +56,21 @@ class WorkflowIOMixin:
             world_building=world_building,
         )
 
+    def _log_att_interaction(
+        self,
+        team_id: str,
+        title: str,
+        content: str,
+        chapter_num: Optional[int] = None,
+    ):
+        self._discussion_logger().append_att(
+            team_id=team_id,
+            title=title,
+            content=content,
+            chapter_num=chapter_num,
+            num3_func=self._num3,
+        )
+
     def _log_llm_interaction(
         self,
         role: str,
@@ -67,6 +82,15 @@ class WorkflowIOMixin:
         world_building: bool = False,
         extra: str = "",
     ):
+        # Push to dashboard activity panel if active
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            db = self.att_manager.dashboard
+            preview = response.strip()
+            clean_preview = " ".join(preview.split())
+            if len(clean_preview) > 120:
+                clean_preview = clean_preview[:117] + "..."
+            db.add_activity(role, "Final Answer", clean_preview)
+
         payload = (
             f"ROLE: {role}\n"
             f"PHASE: {phase}\n"

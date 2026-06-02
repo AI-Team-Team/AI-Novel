@@ -50,6 +50,11 @@ class ScanningWorkflowMixin:
             f"{review_task}\n\n{review_format}\n{self._language_rule()}"
         )
 
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = f"Scanning Chapter {chapter_num}"
+            self.att_manager.dashboard.add_activity("Critic", "Thought", f"Checking extracted facts for continuity and timeline consistency...")
+            self.att_manager.dashboard.refresh()
+
         try:
             response = self.critic_client.generate(
                 prompt=review_prompt,
@@ -158,6 +163,11 @@ class ScanningWorkflowMixin:
         text_prefix = get_resource("label.chapter_text") + "："
         extract_instruction = get_resource("prompt.scanner_task")
         scanner_prompt = f"{text_prefix}\n{chapter_text}\n\n{extract_instruction}\n{self._language_rule()}"
+
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = f"Scanning Chapter {chapter_num}"
+            self.att_manager.dashboard.add_activity("Scanner", "Thought", f"Extracting events, character changes, and rule facts from prose...")
+            self.att_manager.dashboard.refresh()
 
         try:
             raw_response = self.scanner_client.generate(

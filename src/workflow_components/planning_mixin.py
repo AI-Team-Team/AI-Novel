@@ -21,6 +21,7 @@ class PlanningWorkflowMixin:
             preset_name="planning",
             system_instructions=preset["system_instructions"]
         )
+        team.chapter_num = chapter_num
 
         prompt = (
             f"Please refine the initial chapter guide for Chapter {chapter_num}.\n\n"
@@ -133,6 +134,11 @@ class PlanningWorkflowMixin:
         if previous_summary:
             full_prompt += f"{prev_summary_prefix} {previous_summary}\n\n"
         full_prompt += task_instruction
+
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = f"Planning Chapter {chapter_num}"
+            self.att_manager.dashboard.add_activity("Planner", "Thought", f"Generating draft Chapter Guide based on history, rules & memory...")
+            self.att_manager.dashboard.refresh()
 
         try:
             guide = self.planner_client.generate(prompt=full_prompt, system_instruction=prompts["planner"])

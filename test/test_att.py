@@ -191,5 +191,61 @@ class TestATT(unittest.TestCase):
         # Message inbox should be cleared after discussion
         self.assertEqual(len(team.message_inbox), 0)
 
+    def test_chapter_num_propagation_and_att_logging(self):
+        """Verify that chapter_num propagates correctly down dynamic teams and ATT split logs are generated."""
+        from workflow_components.discussion import DiscussionLogger
+        import shutil
+
+        # Setup custom test log directory
+        test_log_dir = "test_discussion_log"
+        if os.path.exists(test_log_dir):
+            shutil.rmtree(test_log_dir)
+
+        try:
+            discussion_logger = DiscussionLogger(test_log_dir)
+            self.manager.discussion_logger = discussion_logger
+
+            # Create a parent team and set its chapter_num
+            parent_team = self.manager.create_agent_team(creator=self.root_ai, member_count=3)
+            parent_team.chapter_num = 42
+
+            # Creator agent from parent team launches recursive child team
+            creator_agent = parent_team.members[0]
+            child_team = creator_agent.launch_att(self.manager, member_count=3)
+
+            # Child team launches grandchild team
+            grandchild_team = child_team.launch_att(self.manager, member_count=3)
+
+            # Verify chapter_num propagation
+            self.assertEqual(child_team.chapter_num, 42)
+            self.assertEqual(grandchild_team.chapter_num, 42)
+
+            # Let's perform a step with child team and log it
+            child_team.tools = {}
+            self.mock_client.generate.return_value = "Final Answer: Done."
+            
+            # This should log both react steps and the final synthesized debate transcript
+            self.manager.execute_team_discussion(child_team, "Run some debate", rounds=1)
+
+            # Verify that logs were generated
+            all_log = discussion_logger.all_log_path()
+            split_log = discussion_logger.att_log_path(child_team.team_id)
+            chapter_log = discussion_logger.chapter_log_path(42, lambda val: f"{val:03d}")
+
+            self.assertTrue(os.path.exists(all_log))
+            self.assertTrue(os.path.exists(split_log))
+            self.assertTrue(os.path.exists(chapter_log))
+
+            # Verify file content has the team ID
+            with open(split_log, "r", encoding="utf-8") as f:
+                content = f.read()
+                self.assertIn(child_team.team_id, content)
+                self.assertIn("Synthesized Debate Transcript", content)
+
+        finally:
+            # Clean up test directory
+            if os.path.exists(test_log_dir):
+                shutil.rmtree(test_log_dir)
+
 if __name__ == "__main__":
     unittest.main()

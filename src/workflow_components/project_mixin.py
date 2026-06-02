@@ -29,6 +29,7 @@ class ProjectWorkflowMixin:
             preset_name="plot_outline",
             system_instructions=preset["system_instructions"]
         )
+        team.chapter_num = 0
 
         prompt = (
             f"Please generate the outline for '{phase_name}'.\n\n"
@@ -72,6 +73,11 @@ class ProjectWorkflowMixin:
         user_prompt_prefix = get_resource("label.user_request_prefix")
         task_instruction = get_resource("prompt.architect_task")
         architect_prompt = f"{user_prompt_prefix} {user_instruction}\n\n{task_instruction}\n\n{self._language_rule()}"
+
+        if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
+            self.att_manager.dashboard.active_stage = "World Building"
+            self.att_manager.dashboard.add_activity("Architect", "Thought", "Drafting World Bible structure based on overview instructions...")
+            self.att_manager.dashboard.refresh()
 
         try:
             world_bible = self.architect_client.generate(
@@ -117,6 +123,7 @@ class ProjectWorkflowMixin:
             preset_name="world_bible",
             system_instructions=preset["system_instructions"]
         )
+        team.chapter_num = 0
 
         prompt = (
             f"Please refine the initial World Bible based on the user instruction.\n\n"

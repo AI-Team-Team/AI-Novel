@@ -56,6 +56,7 @@ class WorkflowManager(
         self.in_auto_mode = False
         
         self.initialize_autonomy()
+        self.att_manager.discussion_logger = self._discussion_logger()
         
         # Setup get_embedding proxy wrapper for validation
         original_get_embedding = self.embedding_client.get_embedding
@@ -524,3 +525,39 @@ class WorkflowManager(
         finally:
             self.embedding_client._bypass_all_checks = False
             self.embedding_client._fingerprint_verified = True # Re-mark as verified since we just updated
+
+    def run_with_dashboard(self, func, *args, **kwargs):
+        """Runs the specified workflow function inside the ConsoleDashboard context."""
+        from rich.live import Live
+        from utils.dashboard import ConsoleDashboard
+        import time
+
+        dashboard = ConsoleDashboard(self)
+        self.att_manager.dashboard = dashboard
+
+        # Set active stage based on function name or custom attribute
+        func_name = func.__name__
+        if func_name == "start_new_project":
+            dashboard.active_stage = "Initializing World Bible & Outlines"
+        elif func_name == "write_novel_automatically":
+            dashboard.active_stage = "Writing Novel Automatically"
+        else:
+            dashboard.active_stage = f"Executing {func_name}"
+
+        dashboard.start_capture()
+        try:
+            with Live(dashboard.render(), screen=True, auto_refresh=True, refresh_per_second=4) as live:
+                dashboard.set_live(live)
+                result = func(*args, **kwargs)
+                dashboard.active_stage = "Finished successfully"
+                dashboard.refresh()
+                time.sleep(1) # Brief pause so user can see completion
+                return result
+        except Exception as e:
+            dashboard.active_stage = f"Error: {e}"
+            dashboard.refresh()
+            self.logger.exception(f"Error in dashboard execution: {e}")
+            raise
+        finally:
+            dashboard.stop_capture()
+            self.att_manager.dashboard = None

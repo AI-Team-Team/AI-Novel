@@ -190,26 +190,23 @@ def main(
 
         elif start:
             console.print(Panel("[bold cyan]Starting From Novel Overview[/bold cyan]", border_style="cyan"))
-            overview_text = workflow.load_novel_overview()
-            bible_path = workflow.start_new_project(overview_text)
-            console.print("\n[bold green]✔ World Setup Complete[/bold green]")
-            console.print(f"World Bible: [bold white]{bible_path}[/bold white]")
-            console.print("Critique: [bold white]novel/process/critiques/critique.md[/bold white]")
-
-            console.print(Panel("[bold yellow]Planning Chapter 1[/bold yellow]", border_style="yellow"))
-            guide = workflow.generate_chapter_guide(1)
-            console.print("[bold green]✔ Guide generated.[/bold green]")
-
-            console.print(Panel("[bold yellow]Writing Chapter 1[/bold yellow]", border_style="yellow"))
-            chapter_text = workflow.write_chapter(1, guide)
             
-            console.print(Panel("[bold yellow]Reviewing + Scanning Chapter 1[/bold yellow]", border_style="yellow"))
-            workflow.review_revise_and_scan(1, guide, chapter_text)
-            console.print("\n[bold green]✔ Success![/bold green] Chapter 001 saved to [bold white]novel/main_text/chapters/chapter_001.md[/bold white]")
+            def run_start():
+                overview_text = workflow.load_novel_overview()
+                bible_path = workflow.start_new_project(overview_text)
+                guide = workflow.generate_chapter_guide(1)
+                chapter_text = workflow.write_chapter(1, guide)
+                workflow.review_revise_and_scan(1, guide, chapter_text)
+                return bible_path
+
+            bible_path = workflow.run_with_dashboard(run_start)
+            console.print("\n[bold green]✔ Success![/bold green] Setup and Chapter 001 generation complete.")
+            console.print(f"World Bible: [bold white]{bible_path}[/bold white]")
+            console.print("Chapter 001 saved to [bold white]novel/main_text/chapters/chapter_001.md[/bold white]")
 
         elif plan is not None:
             console.print(f"Generating guide for Chapter [bold yellow]{plan}[/bold yellow]...")
-            workflow.generate_chapter_guide(plan)
+            workflow.run_with_dashboard(workflow.generate_chapter_guide, plan)
             console.print("[bold green]✔ Done.[/bold green]")
 
         elif write is not None:
@@ -226,14 +223,16 @@ def main(
             with open(guide_path, "r", encoding="utf-8") as f:
                 guide = f.read()
 
-            chapter_text = workflow.write_chapter(write, guide)
-            console.print("Running review + scan...")
-            workflow.review_revise_and_scan(write, guide, chapter_text)
+            def run_write():
+                chapter_text = workflow.write_chapter(write, guide)
+                workflow.review_revise_and_scan(write, guide, chapter_text)
+
+            workflow.run_with_dashboard(run_write)
             console.print("[bold green]✔ Done.[/bold green]")
 
         elif scan is not None:
             console.print(f"Scanning Chapter [bold yellow]{scan}[/bold yellow]...")
-            workflow.scan_chapter(scan)
+            workflow.run_with_dashboard(workflow.scan_chapter, scan)
             console.print("[bold green]✔ Done.[/bold green]")
 
         elif auto is not None:
@@ -242,7 +241,7 @@ def main(
                 f"[bold cyan]Auto-Generating {count} chapters starting from Chapter {start_chap}[/bold cyan]",
                 border_style="cyan"
             ))
-            workflow.run_continuous_loop(start_chap, count)
+            workflow.run_with_dashboard(workflow.run_continuous_loop, start_chap, count)
             console.print("\n[bold green]✔ Batch generation complete.[/bold green]")
 
         elif conflicts_json:

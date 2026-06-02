@@ -64,6 +64,7 @@ class ConflictResolverWorkflowMixin:
             preset_name="conflict_resolution",
             system_instructions=preset["system_instructions"]
         )
+        team.chapter_num = chapter_num
 
         prompt = (
             f"Please resolve the narrative conflict detailed below:\n\n"
