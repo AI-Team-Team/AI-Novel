@@ -49,6 +49,18 @@ class DashboardLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+class DashboardRenderable:
+    def __init__(self, dashboard: 'ConsoleDashboard', layout: Layout):
+        self.dashboard = dashboard
+        self.layout = layout
+
+    def __rich_console__(self, console, options):
+        # Prevent terminal scrolling by rendering 1 line less than the viewport height.
+        # This leaves exactly 1 line for the trailing newline, preventing overflow.
+        target_height = max(10, console.height - 1)
+        options.height = target_height
+        yield from console.render(self.layout, options)
+
 class ConsoleDashboard:
     def __init__(self, workflow_manager=None):
         self.workflow_manager = workflow_manager
@@ -60,9 +72,53 @@ class ConsoleDashboard:
         self.live = None
         self.handler = None
         self.old_levels = {}
+        self.old_tty_attrs = None
 
     def set_live(self, live):
         self.live = live
+        try:
+            import sys
+            import termios
+            import threading
+            if sys.__stdout__ and sys.__stdout__.isatty() and sys.__stdin__ and sys.__stdin__.isatty():
+                # Save original TTY settings to restore later
+                self.old_tty_attrs = termios.tcgetattr(sys.__stdin__)
+                
+                # Disable ECHO and ICANON so mouse tracking/scroll sequences are not visually echoed and are passed immediately
+                new_attrs = termios.tcgetattr(sys.__stdin__)
+                new_attrs[3] = new_attrs[3] & ~termios.ECHO & ~termios.ICANON
+                new_attrs[6][termios.VMIN] = 1
+                new_attrs[6][termios.VTIME] = 0
+                termios.tcsetattr(sys.__stdin__, termios.TCSADRAIN, new_attrs)
+
+                # Enable mouse click/scroll tracking to lock viewport scrolling.
+                # (We do NOT use \033[3J here to preserve the primary screen's scrollback history).
+                sys.__stdout__.write("\033[?1000h\033[?1006h")
+                sys.__stdout__.flush()
+
+                # Start background thread to drain stdin and prevent OS input buffer overflow beeps/lag
+                self.stop_drain_event = threading.Event()
+                
+                def drain_stdin(stop_event):
+                    import select
+                    import os
+                    import time
+                    while not stop_event.is_set():
+                        try:
+                            r, _, _ = select.select([sys.__stdin__], [], [], 0.05)
+                            if r:
+                                os.read(sys.__stdin__.fileno(), 1024)
+                        except Exception:
+                            time.sleep(0.05)
+
+                self.drain_thread = threading.Thread(
+                    target=drain_stdin,
+                    args=(self.stop_drain_event,),
+                    daemon=True
+                )
+                self.drain_thread.start()
+        except Exception:
+            pass
 
     def add_activity(self, agent_name: str, activity_type: str, content: str):
         """Appends a ReAct loop thought, action, or observation to the dashboard."""
@@ -110,6 +166,43 @@ class ConsoleDashboard:
         self.silence_console_handlers()
 
     def stop_capture(self):
+        # 1. Stop background drain thread
+        try:
+            if getattr(self, "stop_drain_event", None) is not None:
+                self.stop_drain_event.set()
+            if getattr(self, "drain_thread", None) is not None:
+                self.drain_thread.join(timeout=0.2)
+        except Exception:
+            pass
+
+        # 2. Flush standard input to discard any remaining mouse reporting sequences
+        try:
+            import sys
+            import termios
+            if sys.__stdin__ and sys.__stdin__.isatty():
+                termios.tcflush(sys.__stdin__, termios.TCIFLUSH)
+        except (ImportError, AttributeError, ValueError, IOError):
+            pass
+
+        # 2. Restore TTY settings (re-enable ECHO)
+        try:
+            import sys
+            import termios
+            if sys.__stdin__ and sys.__stdin__.isatty() and getattr(self, "old_tty_attrs", None) is not None:
+                termios.tcsetattr(sys.__stdin__, termios.TCSADRAIN, self.old_tty_attrs)
+                self.old_tty_attrs = None
+        except Exception:
+            pass
+
+        # 3. Disable mouse tracking
+        try:
+            import sys
+            if sys.__stdout__ and sys.__stdout__.isatty():
+                sys.__stdout__.write("\033[?1006l\033[?1000l")
+                sys.__stdout__.flush()
+        except Exception:
+            pass
+
         self.restore_console_handlers()
 
     def silence_console_handlers(self):
@@ -117,7 +210,7 @@ class ConsoleDashboard:
         for h in list(logging.getLogger().handlers):
             if h != self.handler:
                 self.old_levels[h] = h.level
-                h.setLevel(logging.WARNING)
+                h.setLevel(logging.CRITICAL + 1)
 
     def restore_console_handlers(self):
         for h, lvl in self.old_levels.items():
@@ -125,7 +218,7 @@ class ConsoleDashboard:
         if self.handler in logging.getLogger().handlers:
             logging.getLogger().removeHandler(self.handler)
 
-    def render(self) -> Layout:
+    def render(self) -> 'DashboardRenderable':
         # Create root layout
         layout = Layout()
         
@@ -263,4 +356,4 @@ class ConsoleDashboard:
         )
         layout["logs"].update(logs_panel)
 
-        return layout
+        return DashboardRenderable(self, layout)
