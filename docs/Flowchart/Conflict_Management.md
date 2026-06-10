@@ -2,6 +2,35 @@
 
 This document details the robust mechanisms for artifact validation, interruption recovery, and conflict resolution.
 
+## 0. Overall Multi-Agent Cooperative Debate & Conflict Triage Loop
+
+```mermaid
+flowchart TD
+    Scanner[Scanner: Extract JSON Payload] --> SchemaCheck{1. Schema Validation}
+    SchemaCheck -->|Invalid| SaveRaw[Save raw debug json] --> FailFast[Halt Loop]
+    SchemaCheck -->|Valid| CriticReview[2. LLM Critic Batch Fact Review]
+    
+    CriticReview --> Filter{Contradictions Detected?}
+    Filter -->|No / LLM Failure| Commit[Proceed to DB Commit]
+    
+    Filter -->|Yes| Classify{Classify Severity}
+    Classify -->|NON_BLOCKING| NB[Keep fact in payload + Queue conflict] --> Commit
+    Classify -->|BLOCKING| B[Remove fact from payload + Queue blocking conflict] --> Commit
+    
+    Commit --> Gate{3. Workflow Gate Check}
+    Gate -->|No Blocking Conflicts| NextChapter((Next Chapter))
+    Gate -->|Blocking Conflicts Present| ModeCheck{Conflict Resolution Mode?}
+    
+    ModeCheck -->|manual_block| Pause[Halt & Wait for CLI Override]
+    ModeCheck -->|auto_keep_existing| AutoKeep[Auto-resolve by keeping existing facts] --> NextChapter
+    ModeCheck -->|AI Debate Enabled| Spawn[4. Spawn Conflict Resolution Committee]
+    
+    Spawn --> Debate[Bounded Debate Loop: Critic vs Scanner vs Planner]
+    Debate --> Decisions{Consensus Reached?}
+    Decisions -->|Yes| Apply[Apply Consensus Transaction] --> NextChapter
+    Decisions -->|No| FailFast2[Fail-Fast: Rollback FAISS/SQLite & Halt]
+```
+
 ## 1. Deep Interruption Recovery
 
 When starting with `--auto`, the system performs an exhaustive integrity check rather than a simple file-exists check.
