@@ -7,6 +7,7 @@ This guide provides a comprehensive overview of the testing system in the AI-Nov
 * **Standard Python `unittest` Only**: The project strictly standardized on the standard library's `unittest` framework. **Do not use `pytest`** or introduce pytest-specific fixtures or configurations.
 * **Virtual Environment Context**: All tests must be executed using the python interpreter from the local virtual environment (`./venv/bin/python`).
 * **No Leftover Test Artifacts**: Tests that mutate storage, databases, or file systems must operate inside isolated temporary directories (e.g., using `tempfile.mkdtemp`), and clean up all resources in `tearDown()`.
+* **Config Isolation**: To prevent local/user configurations and API keys from interfering with or being charged during test execution, the configuration loader detects when `unittest` is in `sys.modules`. It automatically falls back to a static, mock-friendly dummy configuration rather than loading user-defined `config.yaml` or `config/ai_model_config.yaml` files. Developers can force the real config using the `AI_NOVEL_FORCE_REAL_CONFIG=1` environment variable if integration tests require actual endpoints.
 
 ## 2. Running Tests
 

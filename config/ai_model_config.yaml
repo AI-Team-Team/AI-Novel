@@ -14,6 +14,7 @@ gemini:
   base_url: "https://generativelanguage.googleapis.com/"
   model_name: "gemini-3.5-flash"
   ai_note: "gemini-3.5-flash - A very impressive large model"
+  enabled: false
 
 gemini-3.1-flash-lite:
   model_type: "llm"
@@ -22,6 +23,7 @@ gemini-3.1-flash-lite:
   base_url: "https://generativelanguage.googleapis.com/"
   model_name: "gemini-3.1-flash-lite"
   ai_note: "gemini-3.1-flash-lite - A regular Gemini model, but still better than Gemma4."
+  enabled: false
 
 gemma4-26b:
   model_type: "llm"
@@ -30,6 +32,7 @@ gemma4-26b:
   base_url: "https://generativelanguage.googleapis.com/"
   model_name: "gemma-4-26b-a4b-it"
   ai_note: "gemma-4-26b-a4b - A typical 26B open-source model"
+  enabled: false
 
 # OpenAI-compatible LLM configuration template
 gpt-5.5:
@@ -39,6 +42,7 @@ gpt-5.5:
   base_url: "https://api.openai.com/v1"
   model_name: "gpt-5.5"
   ai_note: "gpt-5.5 - A very impressive large model"
+  enabled: false
 
 # Embedding model configuration template
 emb:
@@ -47,6 +51,7 @@ emb:
   api_key: ""
   base_url: "http://localhost:----/v1"
   model_name: ""
+  enabled: false
 
 # Cloudflare Workers AI
 
@@ -57,6 +62,7 @@ nemotron-3-120b-a12b:
   base_url: "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1"
   model_name: "@cf/nvidia/nemotron-3-120b-a12b"
   ai_note: "nemotron-3-120b-a12b - A slightly more powerful 120b open-source model"
+  enabled: false
 
 ## Customizable using the format above
 
@@ -67,3 +73,4 @@ local-AI:
   base_url: "http://localhost:----/v1"
   model_name: ""
   ai_note: "A local model with very small parameters is suitable for simple tasks."
+  enabled: false

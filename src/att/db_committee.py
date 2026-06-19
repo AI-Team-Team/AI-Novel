@@ -33,7 +33,7 @@ class DatabaseManagementCommittee:
         )
 
         try:
-            transcript = self.manager.execute_team_discussion(team, prompt, rounds=1)
+            transcript = self.manager.execute_team_discussion_sync(team, prompt, rounds=1)
             
             # Simple consensus check based on transcript debate
             approved = True
@@ -73,7 +73,7 @@ class DatabaseManagementCommittee:
         )
 
         try:
-            transcript = self.manager.execute_team_discussion(team, prompt, rounds=1)
+            transcript = self.manager.execute_team_discussion_sync(team, prompt, rounds=1)
             
             approved = True
             reason = "DB Management Committee approved the transaction."

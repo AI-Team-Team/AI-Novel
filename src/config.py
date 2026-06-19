@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import yaml
 
@@ -13,22 +14,6 @@ config_yaml_path = os.path.join(project_root, "config.yaml")
 model_config_dir = os.path.join(project_root, "config")
 model_config_path = os.path.join(model_config_dir, "ai_model_config.yaml")
 
-# 1. Load config.yaml
-_cfg = _load_yaml(config_yaml_path)
-
-def _get(section: str, key: str, default):
-    return _cfg.get(section, {}).get(key, default)
-
-# 2. Load config/ai_model_config.yaml. If missing, raise error directly
-if not os.path.exists(model_config_path):
-    raise FileNotFoundError(
-        f"Configuration Error: The model registry file was not found at '{model_config_path}'. "
-        f"Please create this file to register your AI models before running the application."
-    )
-
-_model_registry = _load_yaml(model_config_path)
-
-# Helper to expand environment variables and fetch fallback environment values
 # Helper to expand environment variables
 def _resolve_config_field(val: str, field_name: str, api_type: str) -> str:
     if not val:
@@ -42,11 +27,6 @@ def _resolve_config_field(val: str, field_name: str, api_type: str) -> str:
         return ""
     return expanded
 
-# 3. Validate Role Assignment in config.yaml
-models_section = _cfg.get("models", {})
-if not isinstance(models_section, dict):
-    raise ValueError("The 'models' section in config.yaml must be a dictionary.")
-
 REQUIRED_ROLES = [
     "default_model",
     "architect_model",
@@ -57,58 +37,139 @@ REQUIRED_ROLES = [
     "embedding_model",
 ]
 
-for role in REQUIRED_ROLES:
-    val = models_section.get(role)
-    if not val or not str(val).strip():
-        raise ValueError(
-            f"Configuration Error: Assigned role '{role}' in config.yaml has an empty or missing value. "
-            f"Please specify a valid registered model key from config/ai_model_config.yaml."
-        )
+# Check if running in a unittest environment and test configuration is requested
+is_testing = ("unittest" in sys.modules or os.getenv("AI_NOVEL_USE_TEST_CONFIG") == "1") and os.getenv("AI_NOVEL_FORCE_REAL_CONFIG") != "1"
 
-# 4. Resolve registered models from ai_model_config.yaml
-resolved_models = {}
-for key, model_info in _model_registry.items():
-    if not isinstance(model_info, dict):
-        continue
-    api_type = str(model_info.get("api_type", "")).strip().lower()
-    model_type = str(model_info.get("model_type", "llm")).strip().lower()
-    raw_api_key = model_info.get("api_key", "")
-    raw_base_url = model_info.get("base_url", "")
-    model_name = str(model_info.get("model_name", "")).strip()
-    if not model_name:
-        model_name = key
-    ai_note = str(model_info.get("ai_note", "No description")).strip()
-
-    resolved_api_key = _resolve_config_field(raw_api_key, "api_key", api_type)
-    resolved_base_url = _resolve_config_field(raw_base_url, "base_url", api_type)
-
-    resolved_models[key] = {
-        "api_type": api_type,
-        "model_type": model_type,
-        "api_key": resolved_api_key,
-        "base_url": resolved_base_url,
-        "model_name": model_name,
-        "ai_note": ai_note,
+if is_testing:
+    # Use hardcoded test configuration to isolate test runs from user's local config
+    _cfg = {
+        "models": {
+            "default_model": "gemini",
+            "architect_model": "gemini",
+            "planner_model": "gemini",
+            "writer_model": "gemini",
+            "critic_model": "gemini",
+            "scanner_model": "gemini",
+            "embedding_model": "gemini",
+        },
+        "project": {
+            "db_path": "novel/process/facts/facts.db",
+            "faiss_index_path": "novel/process/facts/vector_index.faiss",
+            "novel_title": "Test Novel",
+            "output_dir": "novel/main_text",
+            "frame_dir": "novel/frame",
+            "process_dir": "novel/process",
+            "language": "English",
+        }
     }
+    
+    resolved_models = {
+        "gemini": {
+            "api_type": "gemini",
+            "model_type": "llm",
+            "api_key": "dummy",
+            "base_url": "",
+            "model_name": "gemini-3.5-flash",
+            "ai_note": "Mock model for testing"
+        }
+    }
+    
+    models_section = _cfg["models"]
+    MODEL_REGISTRY = resolved_models
+    
+    ARCHITECT_CONFIG = resolved_models["gemini"]
+    PLANNER_CONFIG = resolved_models["gemini"]
+    WRITER_CONFIG = resolved_models["gemini"]
+    CRITIC_CONFIG = resolved_models["gemini"]
+    SCANNER_CONFIG = resolved_models["gemini"]
+    EMBEDDING_CONFIG = resolved_models["gemini"]
+    
+else:
+    # 1. Load config.yaml
+    _cfg = _load_yaml(config_yaml_path)
 
-# 5. Resolve configured roles
-def _resolve_role_config(role_name: str) -> dict:
-    model_key = models_section.get(role_name)
-    if model_key not in resolved_models:
-        raise ValueError(
-            f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
-            f"which is not registered in config/ai_model_config.yaml."
+    # 2. Load config/ai_model_config.yaml. If missing, raise error directly
+    if not os.path.exists(model_config_path):
+        raise FileNotFoundError(
+            f"Configuration Error: The model registry file was not found at '{model_config_path}'. "
+            f"Please create this file to register your AI models before running the application."
         )
-    return resolved_models[model_key]
 
-ARCHITECT_CONFIG = _resolve_role_config("architect_model")
-PLANNER_CONFIG = _resolve_role_config("planner_model")
-WRITER_CONFIG = _resolve_role_config("writer_model")
-CRITIC_CONFIG = _resolve_role_config("critic_model")
-SCANNER_CONFIG = _resolve_role_config("scanner_model")
-EMBEDDING_CONFIG = _resolve_role_config("embedding_model")
+    _model_registry = _load_yaml(model_config_path)
 
-MODEL_REGISTRY = resolved_models
+    # 3. Validate Role Assignment in config.yaml
+    models_section = _cfg.get("models", {})
+    if not isinstance(models_section, dict):
+        raise ValueError("The 'models' section in config.yaml must be a dictionary.")
+
+    for role in REQUIRED_ROLES:
+        val = models_section.get(role)
+        if not val or not str(val).strip():
+            raise ValueError(
+                f"Configuration Error: Assigned role '{role}' in config.yaml has an empty or missing value. "
+                f"Please specify a valid registered model key from config/ai_model_config.yaml."
+            )
+
+    # 4. Resolve registered models from ai_model_config.yaml
+    resolved_models = {}
+    disabled_models = set()
+    for key, model_info in _model_registry.items():
+        if not isinstance(model_info, dict):
+            continue
+        
+        # Check if the model is explicitly disabled
+        enabled = model_info.get("enabled", True)
+        if enabled is False or str(enabled).lower() == "false":
+            disabled_models.add(key)
+            continue
+
+        api_type = str(model_info.get("api_type", "")).strip().lower()
+        model_type = str(model_info.get("model_type", "llm")).strip().lower()
+        raw_api_key = model_info.get("api_key", "")
+        raw_base_url = model_info.get("base_url", "")
+        model_name = str(model_info.get("model_name", "")).strip()
+        if not model_name:
+            model_name = key
+        ai_note = str(model_info.get("ai_note", "No description")).strip()
+
+        resolved_api_key = _resolve_config_field(raw_api_key, "api_key", api_type)
+        resolved_base_url = _resolve_config_field(raw_base_url, "base_url", api_type)
+
+        resolved_models[key] = {
+            "api_type": api_type,
+            "model_type": model_type,
+            "api_key": resolved_api_key,
+            "base_url": resolved_base_url,
+            "model_name": model_name,
+            "ai_note": ai_note,
+        }
+
+    # 5. Resolve configured roles
+    def _resolve_role_config(role_name: str) -> dict:
+        model_key = models_section.get(role_name)
+        if model_key in disabled_models:
+            raise ValueError(
+                f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
+                f"which is explicitly disabled in config/ai_model_config.yaml."
+            )
+        if model_key not in resolved_models:
+            raise ValueError(
+                f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
+                f"which is not registered in config/ai_model_config.yaml."
+            )
+        return resolved_models[model_key]
+
+    ARCHITECT_CONFIG = _resolve_role_config("architect_model")
+    PLANNER_CONFIG = _resolve_role_config("planner_model")
+    WRITER_CONFIG = _resolve_role_config("writer_model")
+    CRITIC_CONFIG = _resolve_role_config("critic_model")
+    SCANNER_CONFIG = _resolve_role_config("scanner_model")
+    EMBEDDING_CONFIG = _resolve_role_config("embedding_model")
+
+    MODEL_REGISTRY = resolved_models
+
+def _get(section: str, key: str, default):
+    return _cfg.get(section, {}).get(key, default)
 
 # Expose key variables for other parts of the application or tests
 # =============================

@@ -3,11 +3,11 @@
 # ==========================================
 models:
   # Key references from config/ai_model_config.yaml
-  default_model: "gemini"
-  architect_model: "gemini"
-  planner_model: "gemini"
-  writer_model: "gemini"
-  critic_model: "gemini"
+  default_model: "gemma4-26b"
+  architect_model: "gemma4-26b"
+  planner_model: "gemma4-26b"
+  writer_model: "local-AI"
+  critic_model: "gemma4-26b"
   scanner_model: "local-AI"
   embedding_model: "emb"
 
@@ -21,7 +21,7 @@ project:
   output_dir: "novel/main_text"
   frame_dir: "novel/frame"
   process_dir: "novel/process"
-  # Language: "Chinese" or "English"
+  # Language: "English" or "Chinese"
   language: "English"
 
 # ==========================================

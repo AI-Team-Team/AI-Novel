@@ -76,7 +76,7 @@ class ConflictResolverWorkflowMixin:
 
         # 3. Bounded Debate Loop
         try:
-            transcript_text = self.att_manager.execute_team_discussion(team, prompt, rounds=rounds)
+            transcript_text = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
             planner_decision = self._extract_json(transcript_text)
         except Exception as e:
             self.logger.error(f"[AUTO] ATT debate failed: {e}")

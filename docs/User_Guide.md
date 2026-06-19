@@ -30,9 +30,9 @@ Decouple model registration and agent role assignment using two configuration fi
 
 ### Mapping Agent Roles
 
-In `config.yaml`, roles must be assigned to registered keys in a `models` block
+In `config.yaml`, roles must be assigned to registered keys in a `models` block.
 
-*Note: All role assignments must be provided and non-empty; otherwise, the system will raise an error and exit immediately on startup.*
+*Note: All role assignments must be provided and non-empty; otherwise, the system will raise an error and exit immediately on startup. Similarly, assigning a role to a model key that has been disabled in `config/ai_model_config.yaml` will trigger a validation error on startup.*
 
 ### Registering Models
 
@@ -45,8 +45,10 @@ ai:
   api_key: "${API_KEY}"
   base_url: ""
   model_name: ""
+  enabled: true
 ```
 
+* **Model Enable/Disable Status**: The `enabled` attribute (defaults to `true` if omitted) controls whether a model is loaded. If set to `false`, the model is excluded from the registry. Attempting to assign a disabled model to an active agent role in `config.yaml` will raise a startup validation error.
 * **Environment Variables**: Use `${VAR_NAME}` or `$VAR_NAME` to pull values from system environment variables. If left blank or unset, no default fallbacks are intelligently filled, and they are passed directly as empty strings.
 * **Model Name Fallback**: If `model_name` is empty or omitted, it defaults to the registration key name.
 * **Workflow Parameters**: Customize paths, `WORLD_DISCUSSION_ROUNDS`, or `CHAPTER_REVISION_ROUNDS` under `config.yaml` to control how much the agents iterate.

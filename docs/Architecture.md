@@ -340,8 +340,8 @@ Ensures output consistency through a multi-step process with robust retry bounda
 
 Agent roles are completely decoupled from model specifications:
 
-* **`config.yaml`**: Assigns agent roles (`architect_model`, `planner_model`, `writer_model`, `critic_model`, `scanner_model`, `embedding_model`, and `default_model`) to named model registration keys. Any missing or empty role assignment triggers a validation error immediately.
-* **`config/ai_model_config.yaml`**: Registers credentials, providers, endpoints, and identifiers for LLM and embedding models under named keys. Unset API keys are left blank and do not trigger automatic defaults. Missing `model_name` attributes automatically fall back to the YAML key.
+* **`config.yaml`**: Assigns agent roles (`architect_model`, `planner_model`, `writer_model`, `critic_model`, `scanner_model`, `embedding_model`, and `default_model`) to named model registration keys. Any missing or empty role assignment, or assignment to a disabled model key, triggers a validation error immediately.
+* **`config/ai_model_config.yaml`**: Registers credentials, providers, endpoints, and identifiers for LLM and embedding models under named keys. Unset API keys are left blank and do not trigger automatic defaults. Missing `model_name` attributes automatically fall back to the YAML key. Additionally, supports an optional `enabled` flag (boolean, defaults to `true`). If set to `false`, the model registry will skip registration for that key, deactivating the model.
 
 ### i18n & Prompts
 

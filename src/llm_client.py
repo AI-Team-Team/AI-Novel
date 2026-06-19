@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional
+from typing import Optional, Union, List, Dict, Any
 
 # Conditional import for the new Google GenAI SDK
 try:
@@ -92,7 +92,7 @@ class LLMClient:
         elif self.model_type == "gemini":
             self._setup_gemini()
 
-    def generate(self, prompt: str, system_instruction: str = None, temperature: float = 0.7, require_json: bool = False) -> str:
+    def generate(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str = None, temperature: float = 0.7, require_json: bool = False) -> str:
         """
         Unified generation method.
         """
@@ -102,7 +102,7 @@ class LLMClient:
             return self._generate_openai(prompt, system_instruction, temperature, require_json)
         return ""
 
-    def _generate_gemini(self, prompt: str, system_instruction: str, temperature: float, require_json: bool = False) -> str:
+    def _generate_gemini(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str, temperature: float, require_json: bool = False) -> str:
         if not self.gemini_client:
             raise LLMClientError("Gemini client not initialized.")
         
@@ -113,9 +113,31 @@ class LLMClient:
             if require_json:
                 config_args["response_mime_type"] = "application/json"
             
+            if isinstance(prompt, list):
+                contents = []
+                for msg in prompt:
+                    role = msg.get("role")
+                    if role == "assistant":
+                        role = "model"
+                    content_str = msg.get("content", "")
+                    if genai and types:
+                        contents.append(
+                            types.Content(
+                                role=role,
+                                parts=[types.Part(text=content_str)]
+                            )
+                        )
+                    else:
+                        contents.append({
+                            "role": role,
+                            "parts": [{"text": content_str}]
+                        })
+            else:
+                contents = prompt
+
             kwargs = {
                 "model": self.model_name,
-                "contents": prompt,
+                "contents": contents,
                 "config": config_args
             }
 
@@ -128,14 +150,18 @@ class LLMClient:
             self.logger.error(f"Gemini generation error: {e}")
             raise LLMClientError(f"Gemini generation failed: {e}") from e
 
-    def _generate_openai(self, prompt: str, system_instruction: str, temperature: float, require_json: bool = False) -> str:
+    def _generate_openai(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str, temperature: float, require_json: bool = False) -> str:
         if not self.openai_client:
             raise LLMClientError("OpenAI client not initialized.")
 
         messages = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
-        messages.append({"role": "user", "content": prompt})
+        
+        if isinstance(prompt, list):
+            messages.extend(prompt)
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         kwargs = {
             "model": self.model_name,

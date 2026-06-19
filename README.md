@@ -2,8 +2,6 @@
 
 A multi-agent system designed to write long-form coherent novels by maintaining a structured, multi-tier memory of the world, characters, and plot.
 
-The current ATT is already awesome, and who knows what more this project can achieve in the future! 🥰
-
 Many thanks to Gemini and GPT for their help!
 
 > [!NOTE]

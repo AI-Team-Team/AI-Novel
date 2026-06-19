@@ -31,7 +31,7 @@ class PlanningWorkflowMixin:
         )
 
         try:
-            transcript = self.att_manager.execute_team_discussion(team, prompt, rounds=rounds)
+            transcript = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
             if "final answer:" in transcript.lower():
                 final_guide = transcript.split("Final Answer:", 1)[1].strip()
             else:
