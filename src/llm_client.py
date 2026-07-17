@@ -92,7 +92,7 @@ class LLMClient:
         elif self.model_type == "gemini":
             self._setup_gemini()
 
-    def generate(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str = None, temperature: float = 0.7, require_json: bool = False) -> str:
+    def generate(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str = None, tools: Optional[List[Any]] = None, temperature: float = 0.7, require_json: bool = False, **kwargs) -> str:
         """
         Unified generation method.
         """
@@ -101,6 +101,16 @@ class LLMClient:
         elif self.model_type == "openai":
             return self._generate_openai(prompt, system_instruction, temperature, require_json)
         return ""
+
+    def supports_native_tool_calling(self) -> bool:
+        """
+        Returns True if the client configuration natively supports structured function calling.
+        """
+        if isinstance(self.model_config, dict):
+            val = self.model_config.get("supports_native_tool_calling")
+            if val is not None:
+                return bool(val)
+        return False
 
     def _generate_gemini(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str, temperature: float, require_json: bool = False) -> str:
         if not self.gemini_client:

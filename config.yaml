@@ -67,3 +67,11 @@ autonomy:
   max_chunk_lines: 200                  # Paginated lines per read request
   enable_budget_monitoring: True        # Toggle to enable/disable supervisor budget monitoring
   total_token_budget_usd: 2.00          # Supervisor termination budget cap per session
+  enable_memory_compression: True       # Compress older messages when memory exceeds turns
+  max_memory_turns: 20                  # Maximum turns to retain before memory compression
+  failover_policy: "auto"               # Route strategy on client errors ("auto" or "parent")
+  enable_emergency_wakeup: True         # Wake up idle parent teams on high-priority anomalies
+  emergency_discussion_rounds: 1        # Rounds of debate for emergency wake-ups
+  tool_calling_mode: "auto"             # Tool strategy: "text_react", "native", or "auto"
+  max_tool_rounds: 5                    # Max reasoning loop steps for native parallel execution
+  strict_state_persistence: True        # ORM cascading deletions for unreferenced state

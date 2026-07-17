@@ -147,6 +147,22 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Context Protection Limit*: Files larger than this threshold (in KB) will block direct full reads by agents. The system will instead return a structured **File Outline** sample, forcing the agent to paginate.
 * **`max_chunk_lines: 100`**
   * *Pagination Chunk Cap*: The maximum number of lines returned in a single paginated chunk read. Helps protect the LLM context from log/draft dumps.
+* **`enable_memory_compression: true`**
+  * *Memory Compression*: Automatically summarizes early parts of dialogue histories when the turn count exceeds `max_memory_turns` to prevent Out-Of-Memory (OOM) failures and token window pollution.
+* **`max_memory_turns: 20`**
+  * *High-fidelity Context Window*: The number of raw turns kept as high-fidelity context before older dialogue turns are compressed.
+* **`failover_policy: "auto"`**
+  * *Failover Routing Strategy*: Defines how the system behaves on model API failure or token limit exhaustion. Options: `"auto"` (automatically swap to another available model) or `"parent"` (escalate model selection decisions dynamically to the parent team representatives).
+* **`enable_emergency_wakeup: true`**
+  * *Emergency Wakeup*: Allows idle parent teams to be automatically awoken for rapid emergency debates when high-priority warnings/anomalies are escalated from child teams.
+* **`emergency_discussion_rounds: 1`**
+  * *Emergency Rounds*: Number of discussion rounds run by the parent team when triggered by an emergency wakeup.
+* **`tool_calling_mode: "auto"`**
+  * *Tool Gating Mode*: Strategy for executing tools. Options: `"text_react"` (sequential ReAct loops parsing XML/Thought blocks), `"native"` (parallel structured function calling), or `"auto"` (automatically use native structured calling if the LLM adapter supports it, else fall back to text ReAct).
+* **`max_tool_rounds: 5`**
+  * *Native Parallel Rounds*: The maximum reasoning rounds allowed during native parallel structured tool calls.
+* **`strict_state_persistence: true`**
+  * *Strict Persistence*: Enables ORM-level cascading deletions to automatically clean up orphaned messages, broker agreements, and proposals on state changes.
 
 ### SQLite Auditing: Database Management Committee
 

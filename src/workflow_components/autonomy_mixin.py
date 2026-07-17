@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List, Union
 
 import config
 from ai_team_team import ATTManager, Agent, ATTConfig, GatedFileReader
@@ -67,7 +67,15 @@ class AutonomyWorkflowMixin:
             subagent_discussion_rounds=getattr(config, "SUBAGENT_DISCUSSION_ROUNDS", 1),
             react_max_steps=getattr(config, "REACT_MAX_STEPS", 5),
             inbox_summarize_threshold_chars=getattr(config, "INBOX_SUMMARIZE_THRESHOLD_CHARS", 1500),
-            model_registry=role_to_model
+            model_registry=role_to_model,
+            enable_memory_compression=getattr(config, "ENABLE_MEMORY_COMPRESSION", True),
+            max_memory_turns=getattr(config, "MAX_MEMORY_TURNS", 20),
+            failover_policy=getattr(config, "FAILOVER_POLICY", "auto"),
+            enable_emergency_wakeup=getattr(config, "ENABLE_EMERGENCY_WAKEUP", True),
+            emergency_discussion_rounds=getattr(config, "EMERGENCY_DISCUSSION_ROUNDS", 1),
+            tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto"),
+            max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 5),
+            strict_state_persistence=getattr(config, "STRICT_STATE_PERSISTENCE", True)
         )
 
         # 2. Instantiate root agent and ATTManager
@@ -97,7 +105,7 @@ class AutonomyWorkflowMixin:
         # Register a global generator callback handler
         async def generator_handler(
             model_name: str,
-            prompt: str,
+            prompt: Union[str, List[Dict[str, Any]]],
             system_instruction: Optional[str] = None,
             temperature: float = 0.3,
             require_json: bool = False

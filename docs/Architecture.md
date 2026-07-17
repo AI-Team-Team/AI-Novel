@@ -277,6 +277,14 @@ The entire autonomy framework is highly modular and can be fully enabled/disable
 * `enable_autonomy_suite`: Master toggle to load/skip all autonomy components.
 * `enable_autonomous_queries`: Toggle for ReAct tool use (SQLite, FAISS, Gated file paginators).
 * `enable_dynamic_delegation`: Toggle for hierarchical subagent tree spawning.
+* `enable_memory_compression`: Toggle for O(1) multi-turn memory compression/summarization.
+* `max_memory_turns`: Sets the limit of turns to retain before memory compression triggers.
+* `failover_policy`: Strategy for fallback LLM routing on token limit exhaustion (`"auto"` or `"parent"`).
+* `enable_emergency_wakeup`: Allows waking up idle parent teams on receiving high-priority child anomalies.
+* `emergency_discussion_rounds`: Number of debate rounds for emergency wakeups.
+* `tool_calling_mode`: Selection of tool calling strategy (`"text_react"`, `"native"`, or `"auto"`).
+* `max_tool_rounds`: Step cap for native parallel tool call executions.
+* `strict_state_persistence`: Enables ORM cascading deletes for unreferenced messages/agreements.
 
 ## Commit Replay Recovery
 
