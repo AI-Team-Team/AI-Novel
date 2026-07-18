@@ -21,8 +21,11 @@ project:
   output_dir: "novel/main_text"
   frame_dir: "novel/frame"
   process_dir: "novel/process"
-  # Language: "English" or "Chinese"
-  language: "English"
+  # Language: matches folder name in i18n/ (e.g., en, zh-CN)
+  language: "en"
+  # Language guard confidence thresholds:
+  min_confidence: 0.80
+  max_other_confidence: 0.10
 
 # ==========================================
 # Retrieval / Constraint Controls

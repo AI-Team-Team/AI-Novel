@@ -1,7 +1,4 @@
 {
-  "lang.confidence_chinese_min": 0.0,
-  "lang.confidence_english_min": 0.60,
-  "lang.confidence_chinese_max_for_english": 0.10,
   "label.world_background": "World Context:",
   "label.plot_outline": "Novel Plot Outline:",
   "label.detailed_plot_outline": "Detailed Plot Outline:",

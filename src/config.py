@@ -59,7 +59,9 @@ if is_testing:
             "output_dir": "novel/main_text",
             "frame_dir": "novel/frame",
             "process_dir": "novel/process",
-            "language": "English",
+            "language": "en",
+            "min_confidence": 0.60,
+            "max_other_confidence": 0.10,
         }
     }
     
@@ -181,7 +183,9 @@ NOVEL_TITLE = _get("project", "novel_title", "Untitled Novel")
 OUTPUT_DIR = _get("project", "output_dir", "novel/main_text")
 FRAME_DIR = _get("project", "frame_dir", "novel/frame")
 PROCESS_DIR = _get("project", "process_dir", "novel/process")
-LANGUAGE = _get("project", "language", "Chinese")
+LANGUAGE = _get("project", "language", "en")
+MIN_CONFIDENCE = float(_get("project", "min_confidence", 0.60))
+MAX_OTHER_CONFIDENCE = float(_get("project", "max_other_confidence", 0.10))
 
 # =============================
 # Retrieval / Constraint Controls

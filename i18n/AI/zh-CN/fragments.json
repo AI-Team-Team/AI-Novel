@@ -1,7 +1,4 @@
 {
-  "lang.confidence_chinese_min": 0.20,
-  "lang.confidence_english_min": 0.0,
-  "lang.confidence_english_max_for_chinese": 1.0,
   "label.world_background": "世界背景：",
   "label.plot_outline": "小说情节构思：",
   "label.detailed_plot_outline": "小说的具体情节构思：",

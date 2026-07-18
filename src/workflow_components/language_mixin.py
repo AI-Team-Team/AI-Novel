@@ -33,21 +33,11 @@ class WorkflowLanguageMixin:
     def _is_expected_language(self, text: str) -> bool:
         known_names = self._get_known_character_names()
         confidence = language_confidence(text, exclude_names=known_names)
-        if config.LANGUAGE == "Chinese":
-            # Chinese mode: accept if CJK ratio is non-trivial or any CJK present
-            if confidence["chinese"] >= 0.20:
-                return True
-            return self._contains_cjk(text)
-
-        # English mode: after excluding known character names, check ratios.
-        # Use a relaxed CJK threshold since proper nouns have been stripped.
-        if confidence["english"] >= 0.60 and confidence["chinese"] <= 0.10:
-            return True
-        # Safety net: only fail if there is substantial CJK content remaining
-        # after name exclusion (> 30% suggests real language mixing, not just names).
-        if confidence["chinese"] > 0.30:
-            return False
-        return True
+        is_en = (config.LANGUAGE.lower() == "en")
+        target_key = "latin_ratio" if is_en else "cjk_ratio"
+        other_key = "cjk_ratio" if is_en else "latin_ratio"
+        
+        return confidence[target_key] >= config.MIN_CONFIDENCE and confidence[other_key] <= config.MAX_OTHER_CONFIDENCE
 
     def _enforce_output_language(
         self,

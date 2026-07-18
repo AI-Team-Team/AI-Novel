@@ -94,7 +94,7 @@ class InitSeedingTests(unittest.TestCase):
             config.WORLD_DISCUSSION_ROUNDS = 0
             config.PLOT_DISCUSSION_ROUNDS = 0
             config.DETAILED_PLOT_DISCUSSION_ROUNDS = 0
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             path = wf.start_new_project("write a story")
         finally:
             config.WORLD_DISCUSSION_ROUNDS = old_world_rounds

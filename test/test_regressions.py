@@ -494,10 +494,10 @@ extra tail"""
     def test_language_detector(self):
         old_lang = config.LANGUAGE
         try:
-            config.LANGUAGE = "Chinese"
+            config.LANGUAGE = "zh-CN"
             self.assertTrue(self.wf._is_expected_language("这是中文输出。"))
             self.assertFalse(self.wf._is_expected_language("This is English."))
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             self.assertTrue(self.wf._is_expected_language("This is English."))
             self.assertFalse(self.wf._is_expected_language("这是中文输出。"))
         finally:
@@ -545,7 +545,7 @@ class WorkflowGuideDiscussionTests(unittest.TestCase):
         old_lang = config.LANGUAGE
         old_rounds = config.CHAPTER_GUIDE_DISCUSSION_ROUNDS
         try:
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             config.CHAPTER_GUIDE_DISCUSSION_ROUNDS = 1
             revised = wf._refine_chapter_guide_with_discussion(
                 chapter_num=1,
@@ -599,7 +599,7 @@ class WorkflowTextDiscussionTests(unittest.TestCase):
         old_lang = config.LANGUAGE
         old_rounds = config.CHAPTER_TEXT_DISCUSSION_ROUNDS
         try:
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             config.CHAPTER_TEXT_DISCUSSION_ROUNDS = 1
             wf._review_and_revise_chapter(1, "guide", "chapter text", {"critic": "c", "writer": "w"})
         finally:
@@ -1317,7 +1317,7 @@ class HardeningRegressionTests(unittest.TestCase):
         
         old_lang = config.LANGUAGE
         try:
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             res = wf._enforce_output_language(
                 client=_MockClient(),
                 role="Writer",
@@ -1344,7 +1344,7 @@ class HardeningRegressionTests(unittest.TestCase):
         
         old_lang = config.LANGUAGE
         try:
-            config.LANGUAGE = "English"
+            config.LANGUAGE = "en"
             with self.assertRaises(RuntimeError) as ctx:
                 wf._enforce_output_language(
                     client=_MockClient(),
