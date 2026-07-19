@@ -41,6 +41,10 @@ class WritingWorkflowMixin:
 
     def _review_and_revise_chapter(self, chapter_num: int, guide: str, chapter_text: str, prompts: Dict[str, str]) -> Tuple[str, str]:
         current_text = chapter_text
+        if not getattr(config, "ENABLE_AUTONOMY_SUITE", True):
+            self.logger.info(f"Autonomy suite disabled. Bypassing Chapter Editorial Committee revision for Ch {chapter_num}.")
+            return current_text, "Editorial committee review bypassed because autonomy suite is disabled."
+
         rounds = max(0, config.CHAPTER_TEXT_DISCUSSION_ROUNDS)
         self.logger.info(f"Spawning Chapter Editorial Committee to review and revise Ch {chapter_num}...")
         

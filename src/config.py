@@ -210,7 +210,7 @@ BLOCKING_CONFLICT_MODE = str(_get("workflow", "blocking_conflict_mode", "manual_
 # =============================
 # Autonomy / Delegation Controls
 # =============================
-ENABLE_AUTONOMY_SUITE = bool(_get("autonomy", "enable_autonomy_suite", False))
+ENABLE_AUTONOMY_SUITE = bool(_get("autonomy", "enable_autonomy_suite", True))
 ENABLE_AUTONOMOUS_QUERIES = bool(_get("autonomy", "enable_autonomous_queries", False))
 ENABLE_DYNAMIC_DELEGATION = bool(_get("autonomy", "enable_dynamic_delegation", False))
 MAX_DELEGATION_DEPTH = int(_get("autonomy", "max_delegation_depth", 2))

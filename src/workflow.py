@@ -175,6 +175,28 @@ class WorkflowManager(
             os.makedirs(d, exist_ok=True)
         self._ensure_discussion_logs()
 
+        # Check if FAISS database file is missing or corrupted and rebuild it immediately
+        try:
+            import faiss
+        except ImportError:
+            faiss = None
+
+        if self.memory.index is None and faiss is not None:
+            # Check if there are active records in SQLite vector_metadata
+            try:
+                self.memory.cursor.execute("SELECT COUNT(*) FROM vector_metadata WHERE is_deleted = 0")
+                row = self.memory.cursor.fetchone()
+                has_records = row and row[0] > 0
+            except Exception:
+                has_records = False
+
+            if has_records:
+                self.logger.warning("FAISS database file is missing or corrupted but existing metadata was found. Automatically rebuilding vector index...")
+                try:
+                    self.rebuild_vector_index()
+                except Exception as e:
+                    self.logger.error(f"Failed to automatically rebuild vector index: {e}")
+
     @staticmethod
     def _num3(value: int) -> str:
         return f"{value:03d}"
@@ -260,8 +282,8 @@ class WorkflowManager(
     def _enforce_conflict_free_state(self, stage: str):
         blocking_pending = self.memory.get_pending_blocking_conflict_count()
         
-        # Trigger AI debate if option/auto mode enabled and there are blocking conflicts
-        if blocking_pending > 0 and (getattr(self, "ai_resolve_conflicts", False) or getattr(self, "in_auto_mode", False)):
+        # Trigger AI debate if option/auto mode enabled, there are blocking conflicts, and autonomy is enabled
+        if blocking_pending > 0 and (getattr(self, "ai_resolve_conflicts", False) or getattr(self, "in_auto_mode", False)) and getattr(config, "ENABLE_AUTONOMY_SUITE", True):
             self.logger.info(f"[AUTO] Conflict(s) detected in {stage}. Spawning AI Debate Panel...")
             
             # Fetch all pending blocking conflicts

@@ -7,6 +7,7 @@
   "prompt.language_rule": "Use English only for all outputs. Do not mix in other languages.",
   "prompt.architect_task": "Design the World Bible.",
   "prompt.scanner_seed_task": "Extract initial facts using the scanner JSON schema for DB initialization. Output JSON only.",
+  "prompt.planner_task": "Generate a detailed chapter guide/contract for Chapter {chapter_num}.",
   "prompt.writer_task": "Write Chapter {chapter_num} now.",
   "prompt.critic_review_task": "Review the chapter for contradictions against the writing contract and established facts.",
   "prompt.critic_output_format": "Output strictly:\nNEEDS_REVISION: yes/no\nRATIONALE: ...\nPATCH_GUIDANCE: ...",

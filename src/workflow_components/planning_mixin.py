@@ -8,6 +8,10 @@ from workflow_components.resources import get_resource
 
 class PlanningWorkflowMixin:
     def _refine_chapter_guide_with_discussion(self, chapter_num: int, guide: str, prompts: Dict[str, str]) -> str:
+        if not getattr(config, "ENABLE_AUTONOMY_SUITE", True):
+            self.logger.info(f"Autonomy suite disabled. Bypassing Chapter Planning Committee refinement for Ch {chapter_num}.")
+            return guide
+
         rounds = max(0, config.CHAPTER_GUIDE_DISCUSSION_ROUNDS)
         self.logger.info(f"Spawning Chapter Planning Committee to refine guide for Ch {chapter_num}...")
         

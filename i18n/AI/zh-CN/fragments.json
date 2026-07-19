@@ -7,6 +7,7 @@
   "prompt.language_rule": "必须全程仅使用中文输出，不得混用其他语言（专有名词可保留原文）。",
   "prompt.architect_task": "设计世界设定集。",
   "prompt.scanner_seed_task": "请按既定 JSON 结构提取初始事实，用于数据库初始化。仅输出 JSON。",
+  "prompt.planner_task": "为第 {chapter_num} 章生成一份详细的写作契约/大纲。",
   "prompt.writer_task": "现在撰写第 {chapter_num} 章。",
   "prompt.critic_review_task": "请审查该章节是否与写作契约和既有事实冲突。",
   "prompt.critic_output_format": "请严格输出:\n是否需要修订: 是/否\n理由: ...\n修订建议: ...",

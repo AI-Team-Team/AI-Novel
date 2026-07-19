@@ -60,8 +60,9 @@ class AutonomyWorkflowMixin:
         }
 
         # 1. Build configuration object
+        enable_autonomy = getattr(config, "ENABLE_AUTONOMY_SUITE", True)
         config_obj = ATTConfig(
-            enable_dynamic_delegation=getattr(config, "ENABLE_DYNAMIC_DELEGATION", False),
+            enable_dynamic_delegation=getattr(config, "ENABLE_DYNAMIC_DELEGATION", False) if enable_autonomy else False,
             max_delegation_depth=getattr(config, "MAX_DELEGATION_DEPTH", 2),
             min_subagent_team_size=getattr(config, "MIN_SUBAGENT_TEAM_SIZE", 3),
             subagent_discussion_rounds=getattr(config, "SUBAGENT_DISCUSSION_ROUNDS", 1),
@@ -71,11 +72,12 @@ class AutonomyWorkflowMixin:
             enable_memory_compression=getattr(config, "ENABLE_MEMORY_COMPRESSION", True),
             max_memory_turns=getattr(config, "MAX_MEMORY_TURNS", 20),
             failover_policy=getattr(config, "FAILOVER_POLICY", "auto"),
-            enable_emergency_wakeup=getattr(config, "ENABLE_EMERGENCY_WAKEUP", True),
+            enable_emergency_wakeup=getattr(config, "ENABLE_EMERGENCY_WAKEUP", True) if enable_autonomy else False,
             emergency_discussion_rounds=getattr(config, "EMERGENCY_DISCUSSION_ROUNDS", 1),
-            tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto"),
+            tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto") if enable_autonomy else "off",
             max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 5),
-            strict_state_persistence=getattr(config, "STRICT_STATE_PERSISTENCE", True)
+            strict_state_persistence=getattr(config, "STRICT_STATE_PERSISTENCE", True),
+            workspace_root=os.path.dirname(os.path.abspath(config.DB_PATH))
         )
 
         # 2. Instantiate root agent and ATTManager
@@ -110,7 +112,22 @@ class AutonomyWorkflowMixin:
             temperature: float = 0.3,
             require_json: bool = False
         ) -> str:
-            client = self.llm_clients.get(model_name)
+            client = None
+            instr = (system_instruction or "").lower()
+            if instr:
+                if "architect" in instr or "lore" in instr:
+                    client = self.llm_clients.get("architect")
+                elif any(k in instr for k in ["planner", "arbitrator", "arc", "consensus", "transaction", "reviewer"]):
+                    client = self.llm_clients.get("planner")
+                elif "writer" in instr or "creative" in instr:
+                    client = self.llm_clients.get("writer")
+                elif any(k in instr for k in ["critic", "auditor", "security", "schema", "historian", "style", "editor", "chief"]):
+                    client = self.llm_clients.get("critic")
+                elif "scanner" in instr or "prose" in instr:
+                    client = self.llm_clients.get("scanner")
+
+            if not client:
+                client = self.llm_clients.get(model_name)
             if not client:
                 lower_name = model_name.lower()
                 if "architect" in lower_name or "lore" in lower_name:

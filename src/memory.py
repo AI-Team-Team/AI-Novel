@@ -750,8 +750,12 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         Rebuild FAISS index deterministically from vector_metadata content.
         Active rows are loaded in stable order by old faiss_id, then remapped to contiguous ids.
         """
-        if self.index is None or faiss is None:
+        if faiss is None:
+            print("Error: FAISS python package is not installed. Cannot rebuild.")
             return {"rebuilt": 0, "skipped": 0}
+            
+        if self.index is None:
+            print("Warning: FAISS index file is missing or corrupted. Rebuild will generate a new index.")
         where_clause = "" if include_deleted else "WHERE is_deleted = 0"
         self.cursor.execute(
             f"""SELECT faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag
