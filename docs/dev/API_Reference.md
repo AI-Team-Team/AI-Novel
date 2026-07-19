@@ -95,14 +95,6 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
   * Resolves pending conflicts.
   * Current supported actions: `keep_existing`, `apply_incoming` (for known conflict types).
 
-**Schema control:**
-
-* `get_schema_version() -> int`
-  * Returns current SQLite schema version after forward migrations.
-* Internal migration flow:
-  * Ensures `schema_meta`.
-  * Applies versioned migrations sequentially.
-
 **Deterministic conflict rules in `MemoryManager`:**
 
 * Character status `dead -> alive` → `BLOCKING` (queued, not auto-overwritten).
@@ -283,4 +275,4 @@ Audits SQL queries for transactions.
   * `audit_query(sql_command: str) -> Tuple[bool, str]`
     Validates SQLite queries against safety and integrity guidelines.
   * `audit_batch_transaction(data: Dict[str, Any], chapter_num: Optional[int]) -> Tuple[bool, str]`
-    Audits complete batch updates before DB serialization.
+    Audits complete batch updates before DB serialization. (Note: Currently defined in the class but not invoked by the pipeline).

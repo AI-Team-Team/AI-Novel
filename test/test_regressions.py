@@ -158,11 +158,11 @@ class MemoryMergeTests(unittest.TestCase):
             chapter_num=2,
         )
         self.assertEqual(first_id, second_id)
-        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ? AND timestamp_str = ?", ("Prologue", "Day 1"))
+        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline_events WHERE event_name = ? AND timestamp_str = ?", ("Prologue", "Day 1"))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)
         self.mm.cursor.execute(
-            "SELECT source_commit_id, intent_tag FROM timeline WHERE id = ?",
+            "SELECT source_commit_id, intent_tag FROM timeline_events WHERE id = ?",
             (first_id,),
         )
         row = self.mm.cursor.fetchone()
@@ -225,7 +225,7 @@ class MemoryMergeTests(unittest.TestCase):
             source="test",
             chapter_num=2,
         )
-        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ? AND timestamp_str = ?", ("Battle of Gate", "Year 1"))
+        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline_events WHERE event_name = ? AND timestamp_str = ?", ("Battle of Gate", "Year 1"))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)
         self.assertEqual(self.mm.get_pending_conflict_count(), 1)
@@ -245,7 +245,7 @@ class MemoryMergeTests(unittest.TestCase):
             chapter_num=2,
         )
         self.assertGreater(eid, 0)  # Event IS inserted
-        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Hero Returns",))
+        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline_events WHERE event_name = ?", ("Hero Returns",))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)  # Event exists in DB
         self.assertEqual(self.mm.get_pending_conflict_count(), 1)
@@ -268,7 +268,7 @@ class MemoryMergeTests(unittest.TestCase):
             chapter_num=2,
         )
         self.assertGreater(eid, 0)
-        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Memorial Ceremony",))
+        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline_events WHERE event_name = ?", ("Memorial Ceremony",))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)
         # Now a NON_BLOCKING conflict is queued (Critic will judge if it's truly a problem)
@@ -289,7 +289,7 @@ class MemoryMergeTests(unittest.TestCase):
             chapter_num=2,
         )
         self.assertGreater(eid, 0)  # Event IS inserted (no rule check at memory layer)
-        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline WHERE event_name = ?", ("Forbidden Ritual",))
+        self.mm.cursor.execute("SELECT COUNT(*) FROM timeline_events WHERE event_name = ?", ("Forbidden Ritual",))
         count = self.mm.cursor.fetchone()[0]
         self.assertEqual(count, 1)
         self.assertEqual(self.mm.get_pending_conflict_count(), 0)  # No conflict queued at memory layer

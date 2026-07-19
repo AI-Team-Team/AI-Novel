@@ -65,12 +65,8 @@ class DatabaseTierTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("tavern", results[0]["content"].lower())
 
-    def test_schema_version_initialized(self):
-        version = self.mm.get_schema_version()
-        self.assertGreaterEqual(version, 6)
-
     def test_audit_columns_exist_in_core_fact_tables(self):
-        for table in ("world_rules", "timeline", "vector_metadata"):
+        for table in ("world_rules", "timeline_events", "vector_metadata"):
             self.mm.cursor.execute(f"PRAGMA table_info({table})")
             cols = {row[1] for row in self.mm.cursor.fetchall()}
             self.assertIn("source_commit_id", cols)

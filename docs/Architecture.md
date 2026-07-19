@@ -28,7 +28,7 @@ To maintain continuity, narrative facts are categorized into three levels of "ha
 #### Tier 2: Major Milestones (Semi-Structural)
 
 * **Definition:** Significant events that alter the state of the world or characters.
-* **Storage:** SQLite (`timeline` table).
+* **Storage:** SQLite (`timeline_events` table).
 * **Features:** Tracks `related_entities` and `location` for targeted retrieval.
 * **Enforcement:** Retrieved based on timeline context to ensure cause-and-effect consistency.
 
@@ -40,11 +40,9 @@ To maintain continuity, narrative facts are categorized into three levels of "ha
 
 ## Data Schema
 
-### Schema Versioning
+### Schema Initialization
 
-* SQLite schema upgrades are now forward-only migrations managed by `MemoryManager`.
-* Version state is stored in `schema_meta` (`key='schema_version'`).
-* Databases without `schema_meta` are treated as unsupported legacy state and must be re-initialized.
+* The SQLite schema is initialized in a single flat structure directly on startup. Incremental backward-compatible migrations are disabled.
 * Fact tables include audit metadata fields: `source_commit_id`, `version`, `is_deleted`, `intent_tag`.
 
 ### SQLite Tables
@@ -60,7 +58,7 @@ To maintain continuity, narrative facts are categorized into three levels of "ha
 | `attributes` | JSON | Flexible attributes |
 | `last_updated` | TIMESTAMP | Last modification time |
 
-**`timeline`** (Enhanced)
+**`timeline_events`** (Enhanced)
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
@@ -145,8 +143,8 @@ The system operates on a continuous Plan-Write-Scan loop where the output of one
 5. **Memory Manager (System)**
    * **Action:** Parses the Scanner's JSON.
    * **Updates:**
-     * **SQLite:** Inserts/Updates rows in `characters` and `timeline`.
-     * **FAISS:** Embeds semantic details and adds them to the vector index.
+      * **SQLite:** Inserts/Updates rows in `characters` and `timeline_events`.
+      * **FAISS:** Embeds semantic details and adds them to the vector index.
    * **Audit Layer (New):**
      * Writes row-level revisions into `fact_revisions`.
      * Records chapter batch state in `chapter_commits`.
@@ -268,7 +266,7 @@ Agents in dynamic teams execute tasks inside a robust **Reasoning & Action (ReAc
 
 ### 5. Database Management Committee (DMC)
 
-To secure the SQLite memory store, a dedicated 3-AI **Database Management Committee** audits all direct SQLite transactions and queries, guarding against malicious SQL injection, schema corruption, and logical rule contradictions.
+To secure the SQLite memory store, a dedicated 3-AI **Database Management Committee** audits all dynamic SQLite queries executed by ATT agents via tool calling, guarding against malicious SQL injection, schema corruption, and logical rule contradictions. Trusted backend pipeline operations bypass this layer.
 
 ### 6. Autonomy Toggles in Configuration
 

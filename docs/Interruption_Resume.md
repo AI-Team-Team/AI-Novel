@@ -35,6 +35,8 @@ It validates file integrity by type:
 
 Binary stores (`.db`, `.faiss`) are not file-decoded by this layer; database integrity is checked through commit/state consistency for each chapter.
 
+* **Automatic FAISS Recovery**: During startup, if the FAISS index file is missing or corrupt but the SQLite database has active records in the `vector_metadata` table, the system automatically rebuilds the vector index from database metadata.
+
 ## Chapter Completion Contract
 
 A chapter is treated as complete only when all of the following are valid:

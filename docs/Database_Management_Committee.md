@@ -14,7 +14,7 @@ To safeguard the narrative database, a specialized **Database Management Committ
 
 ## 2. Dynamic Interception Flow
 
-Every SQL transaction executing on the Memory database is intercepted and vetted before committing:
+SQL queries executed dynamically by ATT agents (via the `query_sqlite` tool) are intercepted and vetted by the DMC before execution:
 
 ```plaintext
       [ SQL Query Execution ]
@@ -35,7 +35,7 @@ Every SQL transaction executing on the Memory database is intercepted and vetted
   └───────────┘   └───────────────┘
 ```
 
-1. **Interception**: Direct executions inside the memory and tool layer are intercepted by DMC.
+1. **Interception**: Dynamic SQL queries executed by ATT agents via tool calling are intercepted by DMC. (Note: Trusted backend pipeline operations and direct `MemoryManager` actions bypass the DMC).
 2. **Auditing**: The 3-AI Committee performs a rapid safety audit of the raw SQL query.
 3. **Commit/Rejection Gating**:
    * **Approved**: The query continues to run on SQLite under atomic transaction safety.
@@ -61,4 +61,4 @@ The DMC evaluates queries and returns a clear decision tuple:
 
 ## 4. Integration & Configuration
 
-The DMC is registered automatically on startup by `AutonomyWorkflowMixin.initialize_autonomy()` and bound directly to `MemoryManager`. No manual queries bypass the DMC when autonomy mode is active.
+The DMC is registered automatically on startup by `AutonomyWorkflowMixin.initialize_autonomy()` and bound to the agent tool registry. Direct pipeline database modifications (e.g. schema updates, batch commits, and direct memory manager edits) bypass the committee audits.

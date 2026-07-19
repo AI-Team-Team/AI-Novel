@@ -4,8 +4,6 @@ from typing import Optional
 
 
 class MemorySchemaMixin:
-    SCHEMA_VERSION = 6
-
     def _ensure_schema_meta_table(self):
         self.cursor.execute(
             """
@@ -16,53 +14,9 @@ class MemorySchemaMixin:
             """
         )
 
-    def _table_exists(self, table_name: str) -> bool:
-        self.cursor.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-            (table_name,),
-        )
-        return self.cursor.fetchone() is not None
-
-    def _has_non_meta_tables(self) -> bool:
-        self.cursor.execute(
-            """
-            SELECT 1
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
-              AND name != 'schema_meta'
-            LIMIT 1
-            """
-        )
-        return self.cursor.fetchone() is not None
-
-    def _get_schema_version(self) -> int:
-        self.cursor.execute(
-            "SELECT value FROM schema_meta WHERE key = 'schema_version' LIMIT 1"
-        )
-        row = self.cursor.fetchone()
-        if row:
-            try:
-                return int(row[0])
-            except (TypeError, ValueError):
-                return 0
-        if self._has_non_meta_tables():
-            raise RuntimeError(
-                "Detected unsupported legacy database without schema version metadata. "
-                "Please back up and re-initialize the database."
-            )
-        return 0
-
-    def _set_schema_version(self, version: int):
-        self.cursor.execute(
-            """
-            INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            (str(version),),
-        )
-
-    def _migration_001_initial_schema(self):
+    def _init_sqlite_schema(self):
+        self._ensure_schema_meta_table()
+        
         self.cursor.execute(
             '''
             CREATE TABLE IF NOT EXISTS characters (
@@ -106,7 +60,7 @@ class MemorySchemaMixin:
 
         self.cursor.execute(
             '''
-            CREATE TABLE IF NOT EXISTS timeline (
+            CREATE TABLE IF NOT EXISTS timeline_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_name TEXT,
                 description TEXT,
@@ -192,124 +146,26 @@ class MemorySchemaMixin:
             '''
         )
 
-    def _migration_002_add_indexes(self):
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conflict_queue_status_id ON conflict_queue(status, id)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conflict_queue_entity ON conflict_queue(entity_type, entity_key)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_timeline_event_time ON timeline(event_name, timestamp_str)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_world_rules_category_strictness ON world_rules(category, strictness)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_fact_revisions_entity ON fact_revisions(entity_type, entity_key, id)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chapter_commits_chapter ON chapter_commits(chapter_num, created_at)"
-        )
-
-    def _migration_003_conflict_blocking_levels(self):
-        self.cursor.execute("PRAGMA table_info(conflict_queue)")
-        columns = {row[1] for row in self.cursor.fetchall()}
-        if "blocking_level" not in columns:
-            self.cursor.execute(
-                "ALTER TABLE conflict_queue ADD COLUMN blocking_level TEXT DEFAULT 'BLOCKING'"
-            )
-        self.cursor.execute(
-            "UPDATE conflict_queue SET blocking_level = 'BLOCKING' WHERE blocking_level IS NULL OR blocking_level = ''"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conflict_queue_blocking ON conflict_queue(status, blocking_level, id)"
-        )
-
-    def _migration_004_commit_replay_fields(self):
-        self.cursor.execute("PRAGMA table_info(chapter_commits)")
-        columns = {row[1] for row in self.cursor.fetchall()}
-        if "error_message" not in columns:
-            self.cursor.execute("ALTER TABLE chapter_commits ADD COLUMN error_message TEXT")
-        if "replay_count" not in columns:
-            self.cursor.execute("ALTER TABLE chapter_commits ADD COLUMN replay_count INTEGER DEFAULT 0")
-        if "last_replayed_at" not in columns:
-            self.cursor.execute("ALTER TABLE chapter_commits ADD COLUMN last_replayed_at TIMESTAMP")
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chapter_commits_status_created ON chapter_commits(status, created_at)"
-        )
-
-    def _migration_005_conflict_triage_fields(self):
-        self.cursor.execute("PRAGMA table_info(conflict_queue)")
-        columns = {row[1] for row in self.cursor.fetchall()}
-        if "priority" not in columns:
-            self.cursor.execute("ALTER TABLE conflict_queue ADD COLUMN priority INTEGER DEFAULT 2")
-        if "suggested_action" not in columns:
-            self.cursor.execute(
-                "ALTER TABLE conflict_queue ADD COLUMN suggested_action TEXT DEFAULT 'manual_review'"
-            )
-        self.cursor.execute("UPDATE conflict_queue SET priority = 2 WHERE priority IS NULL")
-        self.cursor.execute(
-            "UPDATE conflict_queue SET suggested_action = 'manual_review' WHERE suggested_action IS NULL OR suggested_action = ''"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conflict_queue_triage ON conflict_queue(status, blocking_level, priority, id)"
-        )
-
-    def _migration_006_audit_fields_for_fact_tables(self):
-        for table in ("world_rules", "timeline", "vector_metadata"):
-            self.cursor.execute(f"PRAGMA table_info({table})")
-            columns = {row[1] for row in self.cursor.fetchall()}
-            if "source_commit_id" not in columns:
-                self.cursor.execute(f"ALTER TABLE {table} ADD COLUMN source_commit_id TEXT")
-            if "version" not in columns:
-                self.cursor.execute(f"ALTER TABLE {table} ADD COLUMN version INTEGER DEFAULT 1")
-            if "is_deleted" not in columns:
-                self.cursor.execute(f"ALTER TABLE {table} ADD COLUMN is_deleted INTEGER DEFAULT 0")
-            if "intent_tag" not in columns:
-                self.cursor.execute(f"ALTER TABLE {table} ADD COLUMN intent_tag TEXT")
-            self.cursor.execute(f"UPDATE {table} SET version = 1 WHERE version IS NULL")
-            self.cursor.execute(f"UPDATE {table} SET is_deleted = 0 WHERE is_deleted IS NULL")
-
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_world_rules_active ON world_rules(is_deleted, category, strictness, id)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_timeline_active ON timeline(is_deleted, event_name, timestamp_str, id)"
-        )
-        self.cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_vector_metadata_active ON vector_metadata(is_deleted, faiss_id)"
-        )
-
-    def _run_migrations(self):
-        migrations = {
-            1: self._migration_001_initial_schema,
-            2: self._migration_002_add_indexes,
-            3: self._migration_003_conflict_blocking_levels,
-            4: self._migration_004_commit_replay_fields,
-            5: self._migration_005_conflict_triage_fields,
-            6: self._migration_006_audit_fields_for_fact_tables,
-        }
-        current_version = self._get_schema_version()
-        for version in range(current_version + 1, self.SCHEMA_VERSION + 1):
-            migration = migrations.get(version)
-            if migration is None:
-                raise RuntimeError(f"Missing migration for schema version {version}")
-            migration()
-            self._set_schema_version(version)
-            self.conn.commit()
-
-    def get_schema_version(self) -> int:
-        return self._get_schema_version()
+        # Create indexes
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_status_id ON conflict_queue(status, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_entity ON conflict_queue(entity_type, entity_key)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_timeline_event_time ON timeline_events(event_name, timestamp_str)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_world_rules_category_strictness ON world_rules(category, strictness)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_revisions_entity ON fact_revisions(entity_type, entity_key, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_chapter_commits_chapter ON chapter_commits(chapter_num, created_at)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_blocking ON conflict_queue(status, blocking_level, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_chapter_commits_status_created ON chapter_commits(status, created_at)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_triage ON conflict_queue(status, blocking_level, priority, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_world_rules_active ON world_rules(is_deleted, category, strictness, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_timeline_active ON timeline_events(is_deleted, event_name, timestamp_str, id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_metadata_active ON vector_metadata(is_deleted, faiss_id)")
 
     def _init_sqlite(self):
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
-        self._ensure_schema_meta_table()
-        self._run_migrations()
+        self._init_sqlite_schema()
 
     def get_schema_meta(self, key: str) -> Optional[str]:
-        # Allow generic retrieval of keys from schema_meta table
         self.cursor.execute(
             "SELECT value FROM schema_meta WHERE key = ? LIMIT 1",
             (key,),
@@ -318,7 +174,6 @@ class MemorySchemaMixin:
         return row[0] if row else None
 
     def set_schema_meta(self, key: str, value: str):
-        # Allow generic insert/upsert of keys in schema_meta table
         self.cursor.execute(
             """
             INSERT INTO schema_meta (key, value) VALUES (?, ?)

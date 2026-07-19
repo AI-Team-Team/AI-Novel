@@ -175,13 +175,16 @@ If an API error or logic crash happens during a database commit:
 1. Check failed commits: `python src/main.py --failed-commits`
 2. Replay a commit: `python src/main.py --replay-commit <COMMIT_ID>`
 
-### Rebuilding Search Index
+### Rebuilding & Recovering Search Index
 
 If you change your Embedding model or need to refresh the vector store:
 
 ```bash
 python src/main.py --rebuild-vectors
 ```
+
+**Automatic Self-Healing**:
+If the FAISS index file is missing or corrupted but SQLite has active records in the `vector_metadata` table, the system automatically reconstructs the vector index from database metadata on startup without requiring manual intervention.
 
 ## 6. Real-Time Terminal Dashboard & Logging
 

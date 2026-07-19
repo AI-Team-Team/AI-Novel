@@ -512,7 +512,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
 
         self.cursor.execute(
             """SELECT id
-               FROM timeline
+               FROM timeline_events
                WHERE event_name = ? AND description = ? AND timestamp_str = ? AND location = ? AND related_entities = ? AND is_deleted = 0
                ORDER BY id ASC
                LIMIT 1""",
@@ -530,7 +530,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
 
         self.cursor.execute(
             """SELECT id, description, location, related_entities
-               FROM timeline
+               FROM timeline_events
                WHERE event_name = ? AND timestamp_str = ? AND is_deleted = 0
                ORDER BY id ASC
                LIMIT 1""",
@@ -562,7 +562,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             return int(existing_id)
 
         self.cursor.execute(
-            '''INSERT INTO timeline 
+            '''INSERT INTO timeline_events 
                (event_name, description, timestamp_str, impact_level, related_entities, location, source_commit_id, version, is_deleted, intent_tag) 
                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?)''',
             (
@@ -603,11 +603,11 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             # Note: This is a simple LIKE query, adequate for prototypes but not highly performant for massive DBs
             search_pattern = f'%"{entity_filter}"%'
             self.cursor.execute(
-                "SELECT * FROM timeline WHERE is_deleted = 0 AND related_entities LIKE ? ORDER BY id DESC LIMIT ?", 
+                "SELECT * FROM timeline_events WHERE is_deleted = 0 AND related_entities LIKE ? ORDER BY id DESC LIMIT ?", 
                 (search_pattern, limit)
             )
         else:
-            self.cursor.execute("SELECT * FROM timeline WHERE is_deleted = 0 ORDER BY id DESC LIMIT ?", (limit,))
+            self.cursor.execute("SELECT * FROM timeline_events WHERE is_deleted = 0 ORDER BY id DESC LIMIT ?", (limit,))
         return self.cursor.fetchall()
 
     # ==========================

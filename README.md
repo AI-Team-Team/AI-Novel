@@ -60,7 +60,7 @@ graph TD
 
 ## 🧠 Double-Engine Hybrid Memory System
 
-AI-Novel uses an advanced, highly precise hybrid memory engine to eliminate hallucinations and retain temporal integrity across hundreds of thousands of words.
+AI-Novel uses a highly precise hybrid memory engine to eliminate hallucinations and retain temporal integrity across hundreds of thousands of words.
 
 It bifurcates memory into:
 
@@ -121,7 +121,7 @@ Beyond the core ATT architecture and database engines, AI-Novel implements sever
 
 3. **Configuration:**
    * Open `config.yaml`.
-   * Set `LANGUAGE = "Chinese"` or `"English"`.
+   * Set `LANGUAGE = "en"` or `"zh-CN"`.
    * Configure role model routing and workflow controls.
 
 ### 1. Initialize Workspace
