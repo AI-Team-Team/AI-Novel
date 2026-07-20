@@ -231,7 +231,7 @@ When running under continuous writing mode (`--auto`) or enabled via the CLI fla
 To support complex narrative tasks, background lore alignment, database transaction auditing, and timeline analysis, the system implements a unified **ATT (AI Team Team)** topology that empowers AI agents to transition from passive context consumers to active, self-governing groups.
 
 > [!NOTE]
-> For in-depth technical specifications, class models, and detailed control-flow Mermaid diagrams of each component, please refer to the dedicated **[AI Autonomy Suite Specification](ATT_Autonomy_Suite/README.md)**, **[AI Autonomy Suite Flowcharts](Flowchart/ATT_Autonomy_Suite/README.md)**, and the **[Database Management Committee Specification](Database_Management_Committee.md)**.
+> For more details about ATT, please refer to the [https://github.com/AI-Team-Team/AI-Team-Team](https://github.com/AI-Team-Team/AI-Team-Team).
 
 ### 1. Recursive Spawning & Hierarchy Lineages
 
@@ -257,11 +257,11 @@ A non-participating **Supervisory Team** composed of exactly 3 specialized AI au
 * **Deadlock Detection**: Audits multi-agent discussion transcripts for deadlocks, repetition, and role deviations.
 * **Recursive Parent Escalation**: Escalates anomalies up the lineage tree until a healthy parent is found. If all ancestors fail (lineage collapse), reports directly to the Level 0 Root AI.
 
-### 4. Centralized ReAct Tool Execution & Safe Argument Parser
+### 4. Agent Tool Execution & Safe Argument Parser
 
-Agents in dynamic teams execute tasks inside a robust **Reasoning & Action (ReAct)** loop:
+Agents in dynamic teams execute tasks inside a robust **Reasoning & Action (ReAct)** or native structured tool-calling loop:
 
-* **Centralized Registry**: Uses a centralized factory in `tools.py` registering system-wide tools (`query_sqlite`, `search_faiss`, `read_file_chunk`, `read_file_tail`, `dispatch_subagent`, `delegate_escalation`, `set_sibling_talk`).
+* **Tool Execution**: Agents are equipped with system-wide and domain-specific tools (such as database query, semantic search, and file page reading tools).
 * **Safe Argument Parser**: Leverages Python's `ast.literal_eval` to safely evaluate quoted string arguments (e.g., search queries containing commas) without breaking or misinterpreting parameters.
 
 ### 5. Database Management Committee (DMC)

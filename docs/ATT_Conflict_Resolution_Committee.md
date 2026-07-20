@@ -1,10 +1,10 @@
 # Multi-Agent Cooperative Debate Conflict Resolver
 
-This document provides a detailed technical reference and operational guide for the **Multi-Agent Cooperative Debate Conflict Resolver**, a dynamic, dynamic, self-governing conflict resolution mechanism designed to negotiate and resolve semantic and logical contradictions within the ATT framework.
+This document provides a technical reference for the **Multi-Agent Cooperative Debate Conflict Resolver**, a conflict resolution mechanism implemented using the AI Team Team (ATT) framework to resolve semantic and logical contradictions in the novel database.
 
 ## 1. Design Paradigm: Dynamic Committee Teams
 
-When a blocking conflict is encountered during chapter scanning (such as character status contradictions or spatiotemporal rule violations), instead of relying on static pre-configured panels or static defaults, the system dynamically convenes a **Conflict Resolution Committee** Agent Team (AT) composed of exactly 3 specialized AI members spawned via the unified `ATTManager`:
+When a blocking conflict is encountered during chapter scanning (such as character status contradictions or spatiotemporal rule violations), instead of relying on static pre-configured panels or static defaults, the system dynamically convenes a **Conflict Resolution Committee** composed of 3 specialized AI members running as a team under the ATT framework:
 
 1. **Historian_Critic**: The guardian of past continuity. Highly skeptical of changes that contradict existing database facts or established world-building rules (advocates for `keep_existing`).
 2. **Prose_Scanner**: The champion of creative directions. Defends the writer's creative prose choices, narrative pacing, and newly scanned character statuses or details (advocates for `apply_incoming`).
