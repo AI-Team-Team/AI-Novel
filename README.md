@@ -97,6 +97,7 @@ Using the AI Team Team (ATT) [https://github.com/AI-Team-Team/AI-Team-Team](http
 * **Editorial Committee**: Writer and Critic execute revision rounds to polish prose.
 * **Conflict Resolution Committee**: Historian, Writer, and Planner agents debate when database contradictions occur (e.g. character resurrection).
 * **Supervisory Auditing**: A 3-AI team audits logs to identify and prevent discussion deadlocks.
+* **Configurable Database Governance**: The Database Management Committee can audit direct ATT SQL, fact batches, replay, conflict resolution, individual fact rows, vector writes, metadata, and maintenance as independently selectable scopes. Invalid committee decisions deny writes by default.
 
 ### 3. Interruption Recovery
 
@@ -201,12 +202,31 @@ models:
   scanner_model: "gemini_flash"
   embedding_model: "openai_embed"
 
-workflow:
+project:
   language: "en"                      # Target novel language ("en" or "zh-CN")
+  min_confidence: 0.60                 # Use 0.70 for the Chinese default profile
+  max_other_confidence: 0.10           # Use 0.30 for the Chinese default profile
+
+workflow:
   world_discussion_rounds: 2          # Bounded world bible review rounds
   chapter_guide_discussion_rounds: 2  # guide review rounds
   chapter_text_discussion_rounds: 2   # prose review rounds
   conflict_discussion_rounds: 2       # Conflict resolution committee rounds
+
+database_audit:
+  enabled: true
+  failure_policy: "deny"
+  scopes:
+    att_sql: true
+    chapter_fact_batches: true
+    commit_replay: true
+    conflict_resolution: true
+    character_writes: false          # Enable for per-row review
+    vector_writes: false             # Enable for per-vector review
+    revision_writes: false           # Enable for before/after revision review
+
+autonomy:
+  state_db_path: "novel/process/att_state_v6.db"
 ```
 
 ## 🚀 Execution Guide
@@ -222,7 +242,7 @@ source ./venv/bin/activate
 Create the core directories and the draft overview:
 
 ```bash
-python src/main.py --init
+./venv/bin/python src/main.py --init
 ```
 
 *Action Required*: Open the newly generated `novel/Novel_Overview.md` and fill in your story details, character summaries, and plot targets.
@@ -232,7 +252,7 @@ python src/main.py --init
 Run the initialization bibles and plot outlines:
 
 ```bash
-python src/main.py --start
+./venv/bin/python src/main.py --start
 ```
 
 This triggers the Architect and Planner agents to:
@@ -248,42 +268,44 @@ Generate chapters in a row using automatic mode:
 
 ```bash
 # Generate 5 chapters starting from Chapter 1
-python src/main.py --auto 1 5
+./venv/bin/python src/main.py --auto 1 5
 ```
 
 *AI Conflict Resolution*: You can add the `--ai-resolve-conflicts` flag to automatically trigger the 3-AI debate panel when blocking constraints are encountered:
 
 ```bash
-python src/main.py --auto 1 5 --ai-resolve-conflicts
+./venv/bin/python src/main.py --auto 1 5 --ai-resolve-conflicts
 ```
 
 ### Step 4: Step-by-Step Manual Operations (Optional)
 
 If you want to intervene or review steps individually:
 
-* **Plan a Chapter**: `python src/main.py --plan 1` (Creates the Chapter Guide)
-* **Write & Review**: `python src/main.py --write 1` (Generates prose and executes editorial critiques)
-* **Scan Facts**: `python src/main.py --scan 1` (Extracts chapter details into DB)
+* **Plan a Chapter**: `./venv/bin/python src/main.py --plan 1` (Creates the Chapter Guide)
+* **Write & Review**: `./venv/bin/python src/main.py --write 1` (Generates prose and executes editorial critiques)
+* **Scan Facts**: `./venv/bin/python src/main.py --scan 1` (Extracts chapter details into DB)
 
 ### Step 5: Advanced Database Maintenance
 
 * **List Active Database Conflicts**:
 
   ```bash
-  python src/main.py --conflicts-triage
+  ./venv/bin/python src/main.py --conflicts-triage
   ```
 
 * **Resolve a Conflict Manually**:
 
   ```bash
-  python src/main.py --resolve-conflict <CONFLICT_ID> <keep_existing|apply_incoming>
+  ./venv/bin/python src/main.py --resolve-conflict <CONFLICT_ID> <keep_existing|apply_incoming>
   ```
 
 * **Replay a Failed Commit**:
 
   ```bash
-  python src/main.py --failed-commits
-  python src/main.py --replay-commit <COMMIT_ID>
+  ./venv/bin/python src/main.py --failed-commits
+  ./venv/bin/python src/main.py --replay-commit <COMMIT_ID>
+  ./venv/bin/python src/main.py --replay-failed-bulk --replay-dry-run
+  ./venv/bin/python src/main.py --replay-failed-bulk --replay-max-attempts 3 --replay-policy continue
   ```
 
 * **Rebuild the Vector Search Index**:
@@ -291,7 +313,7 @@ If you want to intervene or review steps individually:
   If you switch embedding models or need to re-index, run:
 
   ```bash
-  python src/main.py --rebuild-vectors
+  ./venv/bin/python src/main.py --rebuild-vectors
   ```
 
 ## 📄 License

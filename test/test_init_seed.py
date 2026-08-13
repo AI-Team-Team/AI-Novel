@@ -84,7 +84,10 @@ class InitSeedingTests(unittest.TestCase):
         wf.critic_client = _StubClient([])
         wf.scanner_client = _StubClient([json.dumps(seed_json, ensure_ascii=False)])
         wf.embedding_client = _StubClient([])  # not used because details is empty
+        old_att_state_path = config.ATT_STATE_DB_PATH
+        config.ATT_STATE_DB_PATH = os.path.join(self.tmpdir, "att_state.db")
         wf.initialize_autonomy()
+        wf.db_committee.enabled = False
 
         old_world_rounds = config.WORLD_DISCUSSION_ROUNDS
         old_plot_rounds = config.PLOT_DISCUSSION_ROUNDS
@@ -101,6 +104,8 @@ class InitSeedingTests(unittest.TestCase):
             config.PLOT_DISCUSSION_ROUNDS = old_plot_rounds
             config.DETAILED_PLOT_DISCUSSION_ROUNDS = old_detailed_plot_rounds
             config.LANGUAGE = old_lang
+            wf.close_autonomy()
+            config.ATT_STATE_DB_PATH = old_att_state_path
 
         self.assertTrue(os.path.exists(path))
         self.assertIsNotNone(self.memory.get_character("Hero"))

@@ -104,6 +104,9 @@ If a user legitimately decides to switch embedding models, a standard run will b
 2. **Rebuild**: `MemoryManager.rebuild_vector_index_from_metadata` processes all existing text segments, fetches embeddings from the new model (bypassing dimension checks), and reconstructs a brand-new FAISS index matching the new dimension.
 3. **Save Metadata**:
    * The database stored `embedding_dim` is updated to the new model's dimension.
+   * The index is installed through staged atomic replacement coordinated with the SQLite batch.
+   * Rebuild runs and each rebuilt/skipped source row are retained in `vector_rebuild_runs` and `vector_rebuild_audit`.
+   * A load failure preserves `vector_metadata`; startup reconciliation requests a rebuild instead of deleting recovery data.
    * A new `"Hello World!"` fingerprint is generated using the new model and saved to SQLite `schema_meta` as the new benchmark.
 4. **Re-engage**: `_bypass_all_checks` is reset to `False`, and `_fingerprint_verified` is marked as `True`, fully locking in the new model.
 

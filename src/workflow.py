@@ -14,7 +14,7 @@ from workflow_components.parsing import (
     validate_fact_payload,
 )
 from workflow_components.prompts import load_system_prompts
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
 from workflow_components.resume_mixin import WorkflowResumeMixin
 from workflow_components.io_mixin import WorkflowIOMixin
 from workflow_components.language_mixin import WorkflowLanguageMixin
@@ -88,12 +88,9 @@ class WorkflowManager(
                             existing_fp = json.loads(existing_fp_json)
                             import numpy as np
                             if not np.allclose(hw_vector, existing_fp, atol=1e-5):
-                                raise RuntimeError(
-                                    "Embedding Model Mismatch: The registered embedding model does not match the model used to build the existing database. "
-                                    "To switch models, please run --rebuild-vectors."
-                                )
+                                raise RuntimeError(get_message("runtime.vector_model_mismatch"))
                         except (json.JSONDecodeError, TypeError, ValueError) as e:
-                            self.logger.warning(f"Could not parse stored embedding fingerprint: {e}")
+                            self.logger.warning(get_message("runtime.embedding_fingerprint_parse", error=e))
                     else:
                         # Initialize SQLite schema_meta fingerprint & dim
                         self.memory.set_schema_meta("embedding_fingerprint", json.dumps(hw_vector))
@@ -105,10 +102,7 @@ class WorkflowManager(
                         try:
                             existing_dim = int(existing_dim_str)
                             if hw_dim != existing_dim:
-                                raise RuntimeError(
-                                    f"Embedding Dimension Mismatch: expected {existing_dim}, got {hw_dim}. "
-                                    "Please run --rebuild-vectors to safely migrate existing vector data."
-                                )
+                                raise RuntimeError(get_message("runtime.vector_dim_mismatch", expected=existing_dim, actual=hw_dim))
                         except (ValueError, TypeError):
                             pass
                     else:
@@ -134,10 +128,7 @@ class WorkflowManager(
                     expected_dim = self.memory.embedding_dim
                 
                 if expected_dim is not None and len(vector) != expected_dim:
-                    raise RuntimeError(
-                        f"Embedding dimension mismatch: expected {expected_dim}, got {len(vector)}. "
-                        "Please run --rebuild-vectors to safely migrate existing vector data."
-                    )
+                    raise RuntimeError(get_message("runtime.vector_dim_mismatch", expected=expected_dim, actual=len(vector)))
             return vector
 
         self.embedding_client.get_embedding = wrapped_get_embedding
@@ -181,21 +172,50 @@ class WorkflowManager(
         except ImportError:
             faiss = None
 
-        if self.memory.index is None and faiss is not None:
-            # Check if there are active records in SQLite vector_metadata
+        health = self.memory.reconcile_vector_store()
+        if not isinstance(health, dict):
+            self.memory.cursor.execute(
+                "SELECT COUNT(*) FROM vector_metadata WHERE is_deleted = 0"
+            )
+            row = self.memory.cursor.fetchone()
+            active_count = int(row[0]) if row else 0
+            health = {
+                "healthy": self.memory.index is not None or active_count == 0,
+                "requires_rebuild": self.memory.index is None and active_count > 0,
+                "active_metadata_count": active_count,
+                "index_total": 0,
+                "load_error": None,
+                "reasons": ["active metadata exists without a loaded index"],
+            }
+        self.vector_health = health
+        if faiss is not None and self.vector_health["requires_rebuild"]:
+            self.logger.warning(get_message("runtime.faiss_reconcile", reasons="; ".join(self.vector_health["reasons"])))
             try:
-                self.memory.cursor.execute("SELECT COUNT(*) FROM vector_metadata WHERE is_deleted = 0")
-                row = self.memory.cursor.fetchone()
-                has_records = row and row[0] > 0
-            except Exception:
-                has_records = False
+                self.rebuild_vector_index()
+                self.vector_health = self.memory.reconcile_vector_store()
+            except Exception as e:
+                self.logger.error(get_message("runtime.faiss_rebuild_failed", error=e))
 
-            if has_records:
-                self.logger.warning("FAISS database file is missing or corrupted but existing metadata was found. Automatically rebuilding vector index...")
-                try:
-                    self.rebuild_vector_index()
-                except Exception as e:
-                    self.logger.error(f"Failed to automatically rebuild vector index: {e}")
+    def close(self) -> None:
+        """Flush ATT state and close the story database deterministically."""
+
+        att_error = None
+        try:
+            self.close_autonomy()
+        except Exception as exc:
+            att_error = exc
+            self.logger.warning(get_message("runtime.att_shutdown_failed", error=exc))
+        finally:
+            self.memory.close()
+        if att_error is not None:
+            raise att_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+        return False
 
     @staticmethod
     def _num3(value: int) -> str:
@@ -218,17 +238,7 @@ class WorkflowManager(
 
     @staticmethod
     def _default_overview_template() -> str:
-        return (
-            "# Novel Overview\n\n"
-            "Write your high-level novel setup here.\n\n"
-            "This file should contain only your requirements for the novel project.\n"
-            "The system will read the full document as input.\n\n"
-            "Include at least:\n\n"
-            "* Genre and tone\n"
-            "* Main characters and core relationships\n"
-            "* World constraints and major rules\n"
-            "* Initial conflict and rough long arc\n"
-        )
+        return get_message("template.novel_overview")
 
     def initialize_novel_workspace(self) -> str:
         """
@@ -260,23 +270,19 @@ class WorkflowManager(
             template = self._default_overview_template()
             with open(overview_path, "w", encoding="utf-8") as f:
                 f.write(template)
-            self.logger.info(f"Created overview template at {overview_path}")
+            self.logger.info(get_message("runtime.overview_created", path=overview_path))
         return overview_path
 
     def load_novel_overview(self) -> str:
         overview_path = self.get_overview_path()
         if not os.path.exists(overview_path):
-            raise RuntimeError(
-                f"Novel overview not found at {overview_path}. Run --init first."
-            )
+            raise RuntimeError(get_message("runtime.overview_missing", path=overview_path))
 
         with open(overview_path, "r", encoding="utf-8") as f:
             overview = f.read().strip()
 
         if not overview or overview == self._default_overview_template().strip():
-            raise RuntimeError(
-                f"Novel overview at {overview_path} is empty. Fill it first, then run --start."
-            )
+            raise RuntimeError(get_message("runtime.overview_empty", path=overview_path))
         return overview
 
     def _enforce_conflict_free_state(self, stage: str):
@@ -284,7 +290,7 @@ class WorkflowManager(
         
         # Trigger AI debate if option/auto mode enabled, there are blocking conflicts, and autonomy is enabled
         if blocking_pending > 0 and (getattr(self, "ai_resolve_conflicts", False) or getattr(self, "in_auto_mode", False)) and getattr(config, "ENABLE_AUTONOMY_SUITE", True):
-            self.logger.info(f"[AUTO] Conflict(s) detected in {stage}. Spawning AI Debate Panel...")
+            self.logger.info(get_message("runtime.auto_conflicts_detected", stage=stage))
             
             # Fetch all pending blocking conflicts
             rows = self.memory.get_pending_conflicts(limit=50, blocking_only=True)
@@ -297,14 +303,10 @@ class WorkflowManager(
                 # Run Multi-Agent debate resolution
                 resolved = self.ai_debate_resolve_conflict(conflict_id)
                 if resolved:
-                    self.logger.info(f"[AUTO] Conflict #{conflict_id} successfully resolved by AI panel.")
+                    self.logger.info(get_message("runtime.auto_conflict_resolved", conflict_id=conflict_id))
                 else:
-                    self.logger.error(f"[AUTO] Conflict #{conflict_id} debate ended in a STANDOFF.")
-                    raise RuntimeError(
-                        f"Conflict Resolution Standoff: Multi-Agent Debate Panel failed to agree on a resolution "
-                        f"for BLOCKING conflict #{conflict_id} ({conflict_type} for {entity_type}:{entity_key}). "
-                        f"Fail-Fast triggered. Execution halted."
-                    )
+                    self.logger.error(get_message("runtime.auto_conflict_standoff", conflict_id=conflict_id))
+                    raise RuntimeError(get_message("runtime.conflict_standoff", conflict_id=conflict_id))
             
             # Recalculate blocking conflicts after AI debate
             blocking_pending = self.memory.get_pending_blocking_conflict_count()
@@ -317,17 +319,11 @@ class WorkflowManager(
         elif mode == "manual_block":
             pass
         else:
-            raise RuntimeError(
-                f"Invalid BLOCKING_CONFLICT_MODE={mode}. "
-                "Expected one of: auto_keep_existing, manual_block."
-            )
+            raise RuntimeError(get_message("runtime.invalid_conflict_mode", mode=mode))
 
         total_pending = self.memory.get_pending_conflict_count()
         if blocking_pending > 0:
-            raise RuntimeError(
-                f"Blocked at {stage}: {blocking_pending} unresolved BLOCKING conflicts remain in DB "
-                f"(total pending={total_pending}, mode={mode})."
-            )
+            raise RuntimeError(get_message("runtime.blocked_conflicts", stage=stage, count=blocking_pending))
 
     def _extract_json(self, text: str) -> Optional[Dict]:
         return extract_json_payload(text, logger=self.logger)
@@ -454,7 +450,8 @@ class WorkflowManager(
     def resolve_pending_conflict(self, conflict_id: int, action: str, note: str = "") -> bool:
         return self.memory.resolve_conflict(conflict_id=conflict_id, action=action, resolver_note=note)
 
-    def batch_triage_non_blocking(self, limit: int = 50, note: str = "batch triage keep_existing") -> int:
+    def batch_triage_non_blocking(self, limit: int = 50, note: Optional[str] = None) -> int:
+        note = note or get_ai_resource("runtime.batch_triage_note")
         rows = self.memory.get_pending_conflicts(limit=limit, blocking_level=self.memory.NON_BLOCKING)
         resolved = 0
         for row in rows:
@@ -472,6 +469,116 @@ class WorkflowManager(
     def list_failed_chapter_commits(self, limit: int = 20) -> List[tuple]:
         return self.memory.get_failed_chapter_commits(limit=limit)
 
+    def preview_failed_chapter_commits(self, limit: int = 50) -> List[Dict]:
+        """Validate failed commit payloads without mutating database state."""
+
+        preview: List[Dict] = []
+        for row in self.memory.get_failed_chapter_commits(limit=limit):
+            commit_id, chapter_num, source, status = row[:4]
+            full_row = self.memory.get_chapter_commit(commit_id)
+            errors: List[str] = []
+            payload = None
+            if not full_row or not full_row[3]:
+                errors.append(get_message("status.replay.preview_empty"))
+            else:
+                try:
+                    payload = json.loads(full_row[3])
+                except json.JSONDecodeError as exc:
+                    errors.append(get_message("status.replay.preview_decode", error=exc))
+            if payload is not None:
+                errors.extend(validate_fact_payload(payload))
+            preview.append(
+                {
+                    "commit_id": commit_id,
+                    "chapter_num": chapter_num,
+                    "source": source,
+                    "status_before": status,
+                    "can_replay": not errors,
+                    "validation_errors": errors,
+                    "previous_replay_count": row[6],
+                    "previous_error": row[5] or "",
+                }
+            )
+        return preview
+
+    def bulk_replay_failed_commits(
+        self,
+        *,
+        limit: int = 50,
+        dry_run: bool = False,
+        max_attempts: int = 3,
+        retry_policy: str = "continue",
+    ) -> Dict:
+        """Preview or replay failed commits with bounded retries and reports."""
+
+        if limit < 1:
+            raise ValueError(get_message("validation.replay_limit"))
+        if max_attempts < 1:
+            raise ValueError(get_message("validation.replay_attempts"))
+        policy = retry_policy.strip().lower()
+        if policy not in {"continue", "stop"}:
+            raise ValueError(get_message("validation.replay_policy"))
+
+        reports = self.preview_failed_chapter_commits(limit=limit)
+        result = {
+            "dry_run": dry_run,
+            "retry_policy": policy,
+            "max_attempts": max_attempts,
+            "requested_limit": limit,
+            "total": len(reports),
+            "succeeded": 0,
+            "failed": 0,
+            "skipped": 0,
+            "commits": reports,
+        }
+        if dry_run:
+            for report in reports:
+                report["attempts"] = 0
+                report["status_after"] = report["status_before"]
+                report["error_after"] = report["previous_error"]
+                report["outcome"] = (
+                    "preview_ready" if report["can_replay"] else "preview_invalid"
+                )
+                if not report["can_replay"]:
+                    result["skipped"] += 1
+            return result
+
+        stopped = False
+        for report in reports:
+            report["attempts"] = 0
+            if stopped:
+                report["status_after"] = report["status_before"]
+                report["error_after"] = report["previous_error"]
+                report["outcome"] = "not_attempted_after_stop"
+                result["skipped"] += 1
+                continue
+            if not report["can_replay"]:
+                report["status_after"] = report["status_before"]
+                report["error_after"] = report["previous_error"]
+                report["outcome"] = "skipped_invalid_payload"
+                result["skipped"] += 1
+                if policy == "stop":
+                    stopped = True
+                continue
+
+            success = False
+            for attempt in range(1, max_attempts + 1):
+                report["attempts"] = attempt
+                if self.replay_chapter_commit(report["commit_id"]):
+                    success = True
+                    break
+            current = self.memory.get_chapter_commit(report["commit_id"])
+            report["status_after"] = current[4] if current else "MISSING"
+            report["error_after"] = current[6] if current else get_message("status.commit_disappeared")
+            report["outcome"] = "replayed" if success else "failed"
+            if success:
+                result["succeeded"] += 1
+            else:
+                result["failed"] += 1
+                if policy == "stop":
+                    stopped = True
+        return result
+
     def replay_chapter_commit(self, commit_id: str) -> bool:
         row = self.memory.get_chapter_commit(commit_id)
         if not row:
@@ -486,7 +593,7 @@ class WorkflowManager(
                 commit_id,
                 status="FAILED",
                 conflicts_count=0,
-                error_message="Replay skipped: empty payload_json.",
+                error_message=get_message("status.replay.empty_payload"),
             )
             return False
         try:
@@ -496,10 +603,27 @@ class WorkflowManager(
                 commit_id,
                 status="FAILED",
                 conflicts_count=0,
-                error_message="Replay failed: payload_json decode error.",
+                error_message=get_message("status.replay.decode_error"),
+            )
+            return False
+        validation_errors = validate_fact_payload(payload)
+        if validation_errors:
+            self.memory.finalize_chapter_commit(
+                commit_id,
+                status="FAILED",
+                conflicts_count=0,
+                error_message=get_message(
+                    "status.replay.schema_error", errors="; ".join(validation_errors)
+                ),
             )
             return False
         try:
+            self._audit_database_batch(
+                "commit_replay",
+                "replay_chapter_commit",
+                payload,
+                chapter_num,
+            )
             self.memory.begin_batch()
             conflicts = self._apply_fact_payload(
                 payload,
@@ -509,13 +633,13 @@ class WorkflowManager(
                 source_commit_id=commit_id,
                 intent_tag="replay_commit",
             )
-            self.memory.end_batch(success=True)
             self.memory.finalize_chapter_commit(
                 commit_id,
                 status="COMPLETED",
                 conflicts_count=conflicts,
                 error_message="",
             )
+            self.memory.end_batch(success=True)
             self._sync_compact_archives()
             return True
         except Exception as e:
@@ -524,11 +648,11 @@ class WorkflowManager(
                 commit_id,
                 status="FAILED",
                 conflicts_count=0,
-                error_message=f"Replay failed: {e}",
+                error_message=get_message("status.replay.execution_error", error=e),
             )
             return False
 
-    def rebuild_vector_index(self) -> Dict[str, int]:
+    def rebuild_vector_index(self) -> Dict[str, object]:
         # Bypass all checks during rebuild
         self.embedding_client._bypass_all_checks = True
         try:
@@ -556,29 +680,32 @@ class WorkflowManager(
 
         dashboard = ConsoleDashboard(self)
         self.att_manager.dashboard = dashboard
+        dashboard.running = True
 
         # Set active stage based on function name or custom attribute
         func_name = func.__name__
         if func_name == "start_new_project":
-            dashboard.active_stage = "Initializing World Bible & Outlines"
+            dashboard.active_stage = get_message("dashboard.initializing")
         elif func_name == "write_novel_automatically":
-            dashboard.active_stage = "Writing Novel Automatically"
+            dashboard.active_stage = get_message("dashboard.auto_writing")
         else:
-            dashboard.active_stage = f"Executing {func_name}"
+            dashboard.active_stage = get_message("dashboard.executing", name=func_name)
 
         dashboard.start_capture()
         try:
             with Live(dashboard.render(), screen=True, auto_refresh=True, refresh_per_second=4) as live:
                 dashboard.set_live(live)
                 result = func(*args, **kwargs)
-                dashboard.active_stage = "Finished successfully"
+                dashboard.running = False
+                dashboard.active_stage = get_message("dashboard.finished")
                 dashboard.refresh()
                 time.sleep(1) # Brief pause so user can see completion
                 return result
         except Exception as e:
-            dashboard.active_stage = f"Error: {e}"
+            dashboard.running = False
+            dashboard.active_stage = get_message("dashboard.error", error=e)
             dashboard.refresh()
-            self.logger.exception(f"Error in dashboard execution: {e}")
+            self.logger.exception(get_message("dashboard.error", error=e))
             raise
         finally:
             dashboard.stop_capture()

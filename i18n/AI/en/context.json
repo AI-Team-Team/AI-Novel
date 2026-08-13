@@ -50,5 +50,9 @@
   "archive.char_header": "# Character Archive (Compact)",
   "archive.char_no_records": "- No characters recorded yet.",
   "archive.rule_header": "# World Rules (Compact)",
-  "archive.rule_no_records": "- No rules recorded yet."
+  "archive.rule_no_records": "- No rules recorded yet.",
+  "query.semantic.chapter": "Chapter {chapter_num}\n{previous_summary}\n{events}",
+  "query.semantic.entities": "Entities: {entities}",
+  "query.semantic.locations": "Locations: {locations}",
+  "ui.conflict_item": "- #{conflict_id} [{conflict_type}] {entity_type}:{entity_key} (chapter={chapter_num})\n"
 }

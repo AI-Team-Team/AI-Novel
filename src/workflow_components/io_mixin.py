@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 import config
 from workflow_components.discussion import DiscussionLogger
+from workflow_components.resources import get_message
 
 class WorkflowIOMixin:
     def _discussion_logger(self) -> DiscussionLogger:
@@ -35,7 +36,7 @@ class WorkflowIOMixin:
         path = os.path.join(subdir, filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-        self.logger.info(f"Saved {filename} to {path}")
+        self.logger.info(get_message("runtime.saved_file", filename=filename, path=path))
         return path
 
     def _ensure_discussion_logs(self):
@@ -91,19 +92,14 @@ class WorkflowIOMixin:
                 clean_preview = clean_preview[:117] + "..."
             db.add_activity(role, "Final Answer", clean_preview)
 
-        payload = (
-            f"ROLE: {role}\n"
-            f"PHASE: {phase}\n"
-            f"{extra}\n"
-            f"--- SYSTEM INSTRUCTION BEGIN ---\n"
-            f"{system_instruction}\n"
-            f"--- SYSTEM INSTRUCTION END ---\n"
-            f"--- PROMPT BEGIN ---\n"
-            f"{prompt}\n"
-            f"--- PROMPT END ---\n"
-            f"--- RESPONSE BEGIN ---\n"
-            f"{response}\n"
-            f"--- RESPONSE END ---\n"
+        payload = get_message(
+            "log.llm_payload",
+            role=role,
+            phase=phase,
+            extra=extra,
+            system_instruction=system_instruction,
+            prompt=prompt,
+            response=response,
         )
         title = f"{phase} | {role}"
         self._append_discussion_log(

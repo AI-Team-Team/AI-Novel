@@ -1,11 +1,15 @@
 import logging
 import os
+import sqlite3
 from typing import Dict, Any, Optional, Tuple, List, Union
 
 import config
 from ai_team_team import ATTManager, Agent, ATTConfig, GatedFileReader
+from ai_team_team.core import ManagerDefaultClientAdapter
 from att.db_committee import DatabaseManagementCommittee
+from att.runtime import close_att_manager, run_att_async, run_team_discussion
 from llm_client import LLMClient
+from workflow_components.resources import get_ai_resource, get_message
 
 class AutonomyWorkflowMixin:
     """
@@ -58,6 +62,9 @@ class AutonomyWorkflowMixin:
             "Continuity_Critic": config.models_section.get("critic_model"),
             "Arc_Arbitrator": config.models_section.get("planner_model"),
         }
+        self.att_roles_and_models = {
+            role: model for role, model in role_to_model.items() if model
+        }
 
         # 1. Build configuration object
         enable_autonomy = getattr(config, "ENABLE_AUTONOMY_SUITE", True)
@@ -74,15 +81,22 @@ class AutonomyWorkflowMixin:
             failover_policy=getattr(config, "FAILOVER_POLICY", "auto"),
             enable_emergency_wakeup=getattr(config, "ENABLE_EMERGENCY_WAKEUP", True) if enable_autonomy else False,
             emergency_discussion_rounds=getattr(config, "EMERGENCY_DISCUSSION_ROUNDS", 1),
-            tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto") if enable_autonomy else "off",
+            tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto"),
             max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 5),
-            strict_state_persistence=getattr(config, "STRICT_STATE_PERSISTENCE", True),
             workspace_root=os.path.dirname(os.path.abspath(config.DB_PATH))
         )
 
         # 2. Instantiate root agent and ATTManager
-        root_agent = Agent(name="Root_AI_Level_0", role="Architect")
-        att_db_path = os.path.join(config.PROCESS_DIR, "att_state.db")
+        root_agent = Agent(
+            name="Root_AI_Level_0",
+            role="Architect",
+        )
+        att_db_path = getattr(
+            config,
+            "ATT_STATE_DB_PATH",
+            os.path.join(config.PROCESS_DIR, "att_state_v6.db"),
+        )
+        restore_existing = os.path.exists(att_db_path) and os.path.getsize(att_db_path) > 0
         self.att_manager = ATTManager(root_ai=root_agent, config=config_obj, db_path=att_db_path)
 
         # Cache LLM Client mapping by registered model config name and by simple role name
@@ -100,17 +114,14 @@ class AutonomyWorkflowMixin:
             "scanner": getattr(self, "scanner_client", None),
         }
 
-        # Register models on the ATTManager
-        for key, model_info in config.MODEL_REGISTRY.items():
-            self.att_manager.register_model(key, model_info)
-
         # Register a global generator callback handler
         async def generator_handler(
             model_name: str,
             prompt: Union[str, List[Dict[str, Any]]],
             system_instruction: Optional[str] = None,
             temperature: float = 0.3,
-            require_json: bool = False
+            require_json: bool = False,
+            **generation_options: Any,
         ) -> str:
             client = None
             instr = (system_instruction or "").lower()
@@ -160,7 +171,7 @@ class AutonomyWorkflowMixin:
                     client = LLMClient(model_config=model_info)
                     self.llm_clients[model_name] = client
                 else:
-                    raise ValueError(f"Model key '{model_name}' not found in registry.")
+                    raise ValueError(get_message("validation.model_registry", model_name=model_name))
 
             # Inspect signature to construct correct arguments for client.generate safely
             import inspect
@@ -174,6 +185,9 @@ class AutonomyWorkflowMixin:
                 kwargs["temperature"] = temperature
             if "require_json" in sig.parameters or has_var_keyword:
                 kwargs["require_json"] = require_json
+            for name, value in generation_options.items():
+                if name in sig.parameters or has_var_keyword:
+                    kwargs[name] = value
             
             try:
                 return client.generate(prompt, **kwargs)
@@ -181,127 +195,74 @@ class AutonomyWorkflowMixin:
                 return client.generate(prompt)
 
         self.att_manager.register_generator_handler(generator_handler)
+        self.att_manager.root_ai.llm_client = ManagerDefaultClientAdapter(
+            self.att_manager
+        )
+        self.att_manager.root_ai._model_alias = "default"
 
-        def execute_team_discussion_sync(team, prompt, rounds=2):
-            import asyncio
-            coro = self.att_manager.execute_team_discussion(team, prompt, rounds=rounds)
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop and loop.is_running():
-                import threading
-                result = []
-                exception = []
-                def _run():
-                    try:
-                        new_loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(new_loop)
-                        res = new_loop.run_until_complete(coro)
-                        result.append(res)
-                    except Exception as e:
-                        exception.append(e)
-                    finally:
-                        new_loop.close()
-                t = threading.Thread(target=_run)
-                t.start()
-                t.join()
-                if exception:
-                    raise exception[0]
-                return result[0]
-            else:
-                return asyncio.run(coro)
+        if restore_existing:
+            run_att_async(lambda: self.att_manager.load_state(att_db_path))
 
-        self.att_manager.execute_team_discussion_sync = execute_team_discussion_sync
+        # Refresh model metadata after restoration so configuration changes apply.
+        for key, model_info in config.MODEL_REGISTRY.items():
+            self.att_manager.register_model(key, model_info)
 
-        
         # 3. Register custom presets
         PRESETS = {
             "conflict_resolution": {
-                "description": "Multi-Agent Narrative Consensus Panel to resolve blocking database fact contradictions.",
-                "system_instructions": (
-                    "You are a member of the Multi-Agent Narrative Consensus Panel.\n"
-                    "Your collective goal is to debate and resolve the contradiction between the incoming scanned facts "
-                    "and the existing database continuity facts. In the final round, you must decide whether to 'keep_existing' "
-                    "or 'apply_incoming' and provide a narrative compromise to bridge the gap."
-                ),
+                "description": get_ai_resource("committee.conflict.description"),
+                "system_instructions": get_ai_resource("committee.conflict.system"),
                 "roles": [
-                    ("Historian_Critic", "Defends database continuity, world rule integrity, and established timeline facts."),
-                    ("Prose_Scanner", "Defends the newly generated prose's creative choices, pacing, and new details."),
-                    ("Consensus_Planner", "Moderates the debate and synthesizes the final JSON decision choosing exactly one action.")
-                ]
+                    ("Historian_Critic", get_ai_resource("committee.conflict.role.historian")),
+                    ("Prose_Scanner", get_ai_resource("committee.conflict.role.scanner")),
+                    ("Consensus_Planner", get_ai_resource("committee.conflict.role.planner")),
+                ],
             },
-            
             "database_management": {
-                "description": "Database Management Committee to audit all direct SQL queries and transactions.",
-                "system_instructions": (
-                    "You are a member of the Database Management Committee (数据库管理委员会).\n"
-                    "Your collective goal is to audit direct SQLite queries or proposed batch commits against the novel's global rules "
-                    "and structural constraints. You must ensure no rules are broken, no invalid character resurrections occur, "
-                    "and no SQL injections or destructive operations are executed. You must approve or reject the query/transaction."
-                ),
+                "description": get_ai_resource("committee.database.description"),
+                "system_instructions": get_ai_resource("committee.database.system"),
                 "roles": [
-                    ("Security_Officer", "Audits queries for security, safety, and unauthorized modifications."),
-                    ("Schema_Auditor", "Checks queries for structural consistency, table constraints, and field integrity."),
-                    ("Transaction_Planner", "Evaluates the overall transaction intent, timeline consistency, and makes the final decision.")
-                ]
+                    ("Security_Officer", get_ai_resource("committee.database.role.security")),
+                    ("Schema_Auditor", get_ai_resource("committee.database.role.schema")),
+                    ("Transaction_Planner", get_ai_resource("committee.database.role.transaction")),
+                ],
             },
-
             "planning": {
-                "description": "Chapter Planning Committee to outline and write chapter guides.",
-                "system_instructions": (
-                    "You are a member of the Chapter Planning Committee.\n"
-                    "Your objective is to outline the scenes, character focus points, spatiotemporal constraints, and "
-                    "detailed directives for the next chapter based on the World Bible and Plot Outline."
-                ),
+                "description": get_ai_resource("committee.planning.description"),
+                "system_instructions": get_ai_resource("committee.planning.system"),
                 "roles": [
-                    ("Continuity_Auditor", "Ensures the proposed plan matches all previous timeline events and character statuses."),
-                    ("Structural_Planner", "Lays out the scene breakdown, pacing, emotional beats, and writing guidelines."),
-                    ("Reviewer_Arbitrator", "Reviews the plan for completeness, ensures no foresight leaks exist, and builds final guide.")
-                ]
+                    ("Continuity_Auditor", get_ai_resource("committee.planning.role.continuity")),
+                    ("Structural_Planner", get_ai_resource("committee.planning.role.structure")),
+                    ("Reviewer_Arbitrator", get_ai_resource("committee.planning.role.arbitrator")),
+                ],
             },
-
             "editorial": {
-                "description": "Chapter Editorial Committee to write, review, and revise chapter prose.",
-                "system_instructions": (
-                    "You are a member of the Chapter Editorial Committee.\n"
-                    "Your goal is to collaborate on writing, criticizing, and refining the chapter's prose. "
-                    "You must ensure consistent voice, emotional resonance, show-dont-tell technique, and strict rule continuity."
-                ),
+                "description": get_ai_resource("committee.editorial.description"),
+                "system_instructions": get_ai_resource("committee.editorial.system"),
                 "roles": [
-                    ("Style_Critic", "Reviews the generated draft for pacing, vocabulary flow, show-dont-tell depth, and language guard rules."),
-                    ("Creative_Writer", "Generates and rewrites text segments incorporating editorial reviews."),
-                    ("Editor_In_Chief", "Synthesizes comments and signs off on the final chapter text draft.")
-                ]
+                    ("Style_Critic", get_ai_resource("committee.editorial.role.style")),
+                    ("Creative_Writer", get_ai_resource("committee.editorial.role.writer")),
+                    ("Editor_In_Chief", get_ai_resource("committee.editorial.role.chief")),
+                ],
             },
-
             "world_bible": {
-                "description": "World Bible Committee to draft and critique the World rules and characters profiles.",
-                "system_instructions": (
-                    "You are a member of the World Bible Committee.\n"
-                    "Your objective is to draft, review, and refine the core constraints, character profiles, species, "
-                    "and unchangeable laws of the novel's world."
-                ),
+                "description": get_ai_resource("committee.world.description"),
+                "system_instructions": get_ai_resource("committee.world.system"),
                 "roles": [
-                    ("Lore_Architect", "Drafts the system elements, geography, rules, magic systems or technology laws."),
-                    ("Narrative_Critic", "Scrutinizes the world laws for logical holes, inconsistencies, or pacing bottlenecks."),
-                    ("World_Arbitrator", "Synthesizes the finalized World Bible ready for the timeline scanner to seed.")
-                ]
+                    ("Lore_Architect", get_ai_resource("committee.world.role.architect")),
+                    ("Narrative_Critic", get_ai_resource("committee.world.role.critic")),
+                    ("World_Arbitrator", get_ai_resource("committee.world.role.arbitrator")),
+                ],
             },
-
             "plot_outline": {
-                "description": "Plot Outline Committee to design the novel's high-level narrative arcs.",
-                "system_instructions": (
-                    "You are a member of the Plot Outline Committee.\n"
-                    "Your goal is to design the high-level progression, major milestones, character growth, and turning points "
-                    "for the entire novel trajectory."
-                ),
+                "description": get_ai_resource("committee.plot.description"),
+                "system_instructions": get_ai_resource("committee.plot.system"),
                 "roles": [
-                    ("Narrative_Arc_Planner", "Drafts the major narrative turning points, chapters splits, and character goals."),
-                    ("Continuity_Critic", "Checks the outline for logical consistency, causality, and progression pacing."),
-                    ("Arc_Arbitrator", "Finalizes the plot roadmap to guide specific chapter planning committees.")
-                ]
-            }
+                    ("Narrative_Arc_Planner", get_ai_resource("committee.plot.role.planner")),
+                    ("Continuity_Critic", get_ai_resource("committee.plot.role.critic")),
+                    ("Arc_Arbitrator", get_ai_resource("committee.plot.role.arbitrator")),
+                ],
+            },
         }
         for name, preset_data in PRESETS.items():
             self.att_manager.register_preset(
@@ -332,28 +293,38 @@ class AutonomyWorkflowMixin:
         def query_sqlite(sql_command: str) -> str:
             """Queries the SQLite database directly. Arguments: sql_command (str)"""
             if not self.memory:
-                return "Error: Database memory manager is not available in tools context."
+                return get_ai_resource("tool.database_unavailable")
             try:
-                self.memory.cursor.execute(sql_command)
-                rows = self.memory.cursor.fetchall()
-                return str(rows)
+                # ATT executes synchronous tools in worker threads. Use an
+                # operation-local connection instead of MemoryManager's
+                # thread-bound cursor, and let the context manager commit or
+                # roll back the standalone statement deterministically.
+                with sqlite3.connect(self.memory.db_path) as connection:
+                    cursor = connection.execute(sql_command)
+                    if cursor.description is not None:
+                        return str(cursor.fetchall())
+                    affected = max(0, int(cursor.rowcount or 0))
+                    return get_ai_resource(
+                        "tool.sqlite_write_result",
+                        rows=affected,
+                    )
             except Exception as e:
-                return f"SQLite Error: {e}"
+                return get_ai_resource("tool.sqlite_error", error=e)
 
         def search_faiss(query_text: str, limit: int = 3) -> str:
             """Performs semantic vector search on FAISS indices. Arguments: query_text (str), limit (int)"""
             if not self.embedding_client:
-                return "Error: Embedding client not available in tools context."
+                return get_ai_resource("tool.embedding_unavailable")
             if not self.memory:
-                return "Error: Database memory manager is not available in tools context."
+                return get_ai_resource("tool.database_unavailable")
             try:
                 emb = self.embedding_client.get_embedding(query_text)
                 if not emb:
-                    return "Error: Could not generate embedding."
+                    return get_ai_resource("tool.embedding_failed")
                 hits = self.memory.search_semantic(emb, k=int(limit))
                 return str(hits)
             except Exception as e:
-                return f"FAISS Search Error: {e}"
+                return get_ai_resource("tool.faiss_error", error=e)
 
         def read_file_chunk(path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
             """Reads a specific paginated chunk of a file. Arguments: path (str), start_line (int), end_line (int)"""
@@ -363,7 +334,7 @@ class AutonomyWorkflowMixin:
                     end_line = int(end_line)
                 return self.gated_reader.read_file(path, start_line, end_line)
             except Exception as e:
-                return f"Error reading file chunk: {e}"
+                return get_ai_resource("tool.file_chunk_error", error=e)
 
         def read_file_tail(path: str, line_count: int = 50) -> str:
             """Reads the last line_count lines of a file or log. Arguments: path (str), line_count (int)"""
@@ -371,21 +342,26 @@ class AutonomyWorkflowMixin:
                 line_count = int(line_count)
                 return self.gated_reader.read_file_tail(path, line_count)
             except Exception as e:
-                return f"Error reading file tail: {e}"
+                return get_ai_resource("tool.file_tail_error", error=e)
 
-        self.att_manager.register_tool("query_sqlite", "Queries the SQLite database directly with sql_command (str).", query_sqlite)
-        self.att_manager.register_tool("search_faiss", "Performs semantic vector search on FAISS indices using query_text (str) and limit (int).", search_faiss)
-        self.att_manager.register_tool("read_file_chunk", "Reads a specific paginated chunk of a file using path (str), start_line (int), and optionally end_line (int).", read_file_chunk)
-        self.att_manager.register_tool("read_file_tail", "Reads the last line_count (int) lines of a file using path (str).", read_file_tail)
+        tools_enabled = enable_autonomy and getattr(
+            config, "ENABLE_AUTONOMOUS_QUERIES", False
+        )
+        if tools_enabled:
+            self.att_manager.register_tool("query_sqlite", get_ai_resource("tool.query_sqlite.description"), query_sqlite)
+            self.att_manager.register_tool("search_faiss", get_ai_resource("tool.search_faiss.description"), search_faiss)
+            self.att_manager.register_tool("read_file_chunk", get_ai_resource("tool.read_chunk.description"), read_file_chunk)
+            self.att_manager.register_tool("read_file_tail", get_ai_resource("tool.read_tail.description"), read_file_tail)
 
         # 7. Register the Tool Auditor hook for query_sqlite
         def audit_sqlite_query(*args, **kwargs) -> Tuple[bool, str]:
             sql_command = args[0] if args else kwargs.get("sql_command")
             if not sql_command:
-                return False, "No sql_command supplied"
+                return False, get_ai_resource("tool.sql_missing")
             return self.db_committee.audit_query(sql_command)
 
-        self.att_manager.register_tool_auditor("query_sqlite", audit_sqlite_query)
+        if tools_enabled:
+            self.att_manager.register_tool_auditor("query_sqlite", audit_sqlite_query)
 
         # 8. Wire status change and activity handlers to update local ConsoleDashboard screen
         dashboard = getattr(self, "dashboard", None)
@@ -405,6 +381,56 @@ class AutonomyWorkflowMixin:
                 num3_func=num3_func
             )
         self.att_manager.on_log_append = handle_log_append
+
+    def _create_att_team(self, preset_name: str, chapter_num: Optional[int] = None):
+        """Create a committee using ATT's current explicit role/model routing."""
+
+        preset = self.att_manager.get_preset(preset_name)
+        role_names = [role_name for role_name, _ in preset["roles"]]
+        team = self.att_manager.create_agent_team(
+            creator=self.att_manager.root_ai,
+            member_count=len(role_names),
+            roles_and_presets=preset["roles"],
+            roles_and_models={
+                role_name: self.att_roles_and_models[role_name]
+                for role_name in role_names
+                if role_name in self.att_roles_and_models
+            },
+            preset_name=preset_name,
+            system_instructions=preset["system_instructions"],
+        )
+        if chapter_num is not None:
+            team.chapter_num = chapter_num
+        return team
+
+    def _execute_att_discussion(self, team: Any, prompt: str, rounds: int) -> str:
+        return run_team_discussion(self.att_manager, team, prompt, rounds)
+
+    def _audit_database_batch(
+        self,
+        scope: str,
+        operation: str,
+        payload: Dict[str, Any],
+        chapter_num: Optional[int],
+    ) -> None:
+        committee = getattr(self, "db_committee", None)
+        if committee is None or not committee.should_audit(scope):
+            return
+        approved, reason = committee.audit_batch_transaction(
+            payload,
+            chapter_num,
+            scope=scope,
+            operation=operation,
+        )
+        if not approved:
+            raise PermissionError(
+                get_message(
+                    "error.database_audit_denied", operation=operation, reason=reason
+                )
+            )
+
+    def close_autonomy(self) -> None:
+        close_att_manager(getattr(self, "att_manager", None))
 
     def get_autonomy_tools(self, caller_node: Any) -> Dict[str, Any]:
         """Assembles the tools map bound to a specific AgentTeam or Member."""

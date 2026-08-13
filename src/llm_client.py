@@ -2,6 +2,8 @@ import os
 import logging
 from typing import Optional, Union, List, Dict, Any
 
+from workflow_components.resources import get_message
+
 # Conditional import for the new Google GenAI SDK
 try:
     from google import genai
@@ -48,23 +50,23 @@ class LLMClient:
             elif self.model_type == "openai":
                 self._setup_openai()
             else:
-                raise ValueError(f"Unknown model type: {self.model_type}")
+                raise ValueError(get_message("llm.unknown_model_type", model_type=self.model_type))
 
     def _setup_gemini(self):
         if not genai:
-            self.logger.error("google-genai package not installed. Please pip install google-genai")
+            self.logger.error(get_message("llm.google_package_missing"))
             return
         
         api_key = self.api_key
         if not api_key:
-            self.logger.warning("Gemini API Key not found in config.")
+            self.logger.warning(get_message("llm.gemini_key_missing"))
             return
 
         self.gemini_client = genai.Client(api_key=api_key)
 
     def _setup_openai(self):
         if not OpenAI:
-            self.logger.error("openai package not installed. Please pip install openai")
+            self.logger.error(get_message("llm.openai_package_missing"))
             return
             
         try:
@@ -73,22 +75,22 @@ class LLMClient:
                 api_key=self.api_key
             )
         except Exception as e:
-            self.logger.error(f"Failed to initialize OpenAI client: {e}")
+            self.logger.error(get_message("llm.openai_init_failed", error=e))
 
     def _setup_embedding(self):
         """Sets up the dedicated client for embeddings."""
         if self.model_type == "openai":
             if not OpenAI:
-                self.logger.error("openai package not installed. Cannot setup OpenAI embeddings.")
+                self.logger.error(get_message("llm.openai_embedding_package_missing"))
                 return
             try:
                 self.openai_embedding_client = OpenAI(
                     base_url=self.base_url,
                     api_key=self.api_key
                 )
-                self.logger.info(f"Initialized OpenAI Embedding Client at {self.base_url}")
+                self.logger.info(get_message("llm.openai_embedding_ready", base_url=self.base_url))
             except Exception as e:
-                self.logger.error(f"Failed to initialize OpenAI Embedding client: {e}")
+                self.logger.error(get_message("llm.openai_embedding_init_failed", error=e))
         elif self.model_type == "gemini":
             self._setup_gemini()
 
@@ -114,7 +116,7 @@ class LLMClient:
 
     def _generate_gemini(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str, temperature: float, require_json: bool = False) -> str:
         if not self.gemini_client:
-            raise LLMClientError("Gemini client not initialized.")
+            raise LLMClientError(get_message("llm.gemini_uninitialized"))
         
         try:
             config_args = {
@@ -157,12 +159,12 @@ class LLMClient:
             response = self.gemini_client.models.generate_content(**kwargs)
             return response.text
         except Exception as e:
-            self.logger.error(f"Gemini generation error: {e}")
-            raise LLMClientError(f"Gemini generation failed: {e}") from e
+            self.logger.error(get_message("llm.gemini_generation_error", error=e))
+            raise LLMClientError(get_message("llm.gemini_generation_failed", error=e)) from e
 
     def _generate_openai(self, prompt: Union[str, List[Dict[str, Any]]], system_instruction: str, temperature: float, require_json: bool = False) -> str:
         if not self.openai_client:
-            raise LLMClientError("OpenAI client not initialized.")
+            raise LLMClientError(get_message("llm.openai_uninitialized"))
 
         messages = []
         if system_instruction:
@@ -185,8 +187,8 @@ class LLMClient:
             response = self.openai_client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
         except Exception as e:
-            self.logger.error(f"OpenAI generation error: {e}")
-            raise LLMClientError(f"OpenAI generation failed: {e}") from e
+            self.logger.error(get_message("llm.openai_generation_error", error=e))
+            raise LLMClientError(get_message("llm.openai_generation_failed", error=e)) from e
 
     def get_embedding(self, text: str) -> Optional[list]:
         """
@@ -198,7 +200,7 @@ class LLMClient:
             if not self.gemini_client: 
                 self._setup_gemini()
             if not self.gemini_client:
-                self.logger.error("Gemini client not initialized for embeddings.")
+                self.logger.error(get_message("llm.gemini_embedding_uninitialized"))
                 return None
             try:
                 result = self.gemini_client.models.embed_content(
@@ -208,14 +210,14 @@ class LLMClient:
                 )
                 return result.embeddings[0].values
             except Exception as e:
-                self.logger.error(f"Gemini embedding error: {e}")
+                self.logger.error(get_message("llm.gemini_embedding_error", error=e))
                 return None
                 
         elif provider == "openai":
             if not self.openai_embedding_client:
                 self._setup_embedding()
             if not self.openai_embedding_client:
-                self.logger.error("OpenAI Embedding client not initialized.")
+                self.logger.error(get_message("llm.openai_embedding_uninitialized"))
                 return None
             try:
                 response = self.openai_embedding_client.embeddings.create(
@@ -224,8 +226,8 @@ class LLMClient:
                 )
                 return response.data[0].embedding
             except Exception as e:
-                self.logger.error(f"OpenAI embedding error: {e}")
+                self.logger.error(get_message("llm.openai_embedding_error", error=e))
                 return None
         
-        self.logger.error(f"Unknown Embedding Provider: {provider}")
+        self.logger.error(get_message("llm.unknown_embedding_provider", provider=provider))
         return None

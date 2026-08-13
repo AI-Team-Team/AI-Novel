@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from memory import MemoryManager
 
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
 
 class StoryStateManager:
     """
@@ -32,19 +32,19 @@ class StoryStateManager:
         intent: Dict[str, object],
         hits: List[Dict],
     ) -> str:
-        lines = [get_resource("ui.semantic_header")]
+        lines = [get_ai_resource("ui.semantic_header")]
         lines.append(
-            get_resource("ui.semantic_retrieval_intent", mode=intent['mode'], rationale=intent['rationale'])
+            get_ai_resource("ui.semantic_retrieval_intent", mode=intent['mode'], rationale=intent['rationale'])
         )
         focus_entities = intent.get("focus_entities", []) or []
         focus_locations = intent.get("focus_locations", []) or []
         if focus_entities:
             lines.append(
-                get_resource("ui.semantic_focus_entities", entities=', '.join(focus_entities))
+                get_ai_resource("ui.semantic_focus_entities", entities=', '.join(focus_entities))
             )
         if focus_locations:
             lines.append(
-                get_resource("ui.semantic_focus_locations", locations=', '.join(focus_locations))
+                get_ai_resource("ui.semantic_focus_locations", locations=', '.join(focus_locations))
             )
         for hit in hits:
             meta = hit.get("metadata") or {}
@@ -52,7 +52,7 @@ class StoryStateManager:
             detail_type = meta.get("type", "-")
             content = hit.get("content", "")
             lines.append(
-                get_resource("ui.semantic_item", type=detail_type, content=content, location=location)
+                get_ai_resource("ui.semantic_item", type=detail_type, content=content, location=location)
             )
         return "\n".join(lines) + "\n"
 
@@ -66,7 +66,7 @@ class StoryStateManager:
         for event in db_events:
             related = event[5]
             location = event[6]
-            if location and location != "Unknown":
+            if location and location not in {"Unknown", get_ai_resource("default.unknown")}:
                 locations.add(location)
             if related:
                 try:
@@ -121,7 +121,7 @@ class StoryStateManager:
         strict_mode = has_conflict or task_type in {"scanner", "review"}
         
         rationale_key = "prompt.intent_rationale_conflict" if has_conflict else "prompt.intent_rationale_continuity"
-        rationale = get_resource(rationale_key)
+        rationale = get_ai_resource(rationale_key)
 
         return {
             "task_type": task_type,
@@ -219,9 +219,18 @@ class StoryStateManager:
         focus_entities = intent.get("focus_entities", []) or []
         focus_locations = intent.get("focus_locations", []) or []
         queries = [
-            "\n".join(x for x in [f"Chapter {chapter_num}", previous_summary or "", " ".join(event_fragments)] if x),
-            f"Entities: {' '.join(focus_entities)}",
-            f"Locations: {' '.join(focus_locations)}",
+            get_ai_resource(
+                "query.semantic.chapter",
+                chapter_num=chapter_num,
+                previous_summary=previous_summary or "",
+                events=" ".join(event_fragments),
+            ),
+            get_ai_resource(
+                "query.semantic.entities", entities=" ".join(focus_entities)
+            ),
+            get_ai_resource(
+                "query.semantic.locations", locations=" ".join(focus_locations)
+            ),
         ]
         merged_hits: List[Dict] = []
         seen = set()
@@ -333,9 +342,9 @@ class StoryStateManager:
             target_chapter=chapter_num,
         )
         top_hits = ranked_hits[: self.tier_3_search_limit]
-        semantic_summary = get_resource("ui.semantic_skipped")
+        semantic_summary = get_ai_resource("ui.semantic_skipped")
         if intent.get("should_semantic"):
-            semantic_summary = get_resource("ui.semantic_no_hits")
+            semantic_summary = get_ai_resource("ui.semantic_no_hits")
             if top_hits:
                 semantic_summary = self._format_semantic_lines(intent, top_hits)
         return {
@@ -378,9 +387,9 @@ class StoryStateManager:
             current_chapter_num=chapter_num,
         )
         if not intent["should_semantic"]:
-            return get_resource("ui.semantic_skipped")
+            return get_ai_resource("ui.semantic_skipped")
         if not aligned_hits:
-            return get_resource("ui.semantic_no_hits")
+            return get_ai_resource("ui.semantic_no_hits")
         ranked = self.rerank_semantic_hits(
             aligned_hits,
             intent.get("focus_entities", []) or [],
@@ -409,7 +418,7 @@ class StoryStateManager:
                 chapter_num=chapter_num,
             )
             if summary_lines is not None:
-                summary_lines.append(get_resource("label.new_character") + f": {char.get('name')}")
+                summary_lines.append(get_ai_resource("label.new_character") + f": {char.get('name')}")
 
         for char in data.get("updated_characters", []):
             self.memory.upsert_character(
@@ -421,11 +430,11 @@ class StoryStateManager:
                 chapter_num=chapter_num,
             )
             if summary_lines is not None:
-                summary_lines.append(get_resource("label.updated_character") + f": {char.get('name')}")
+                summary_lines.append(get_ai_resource("label.updated_character") + f": {char.get('name')}")
 
         for rule in data.get("new_rules", []):
             self.memory.add_rule(
-                rule.get("category", "General"),
+                rule.get("category", get_ai_resource("default.general")),
                 rule.get("content", ""),
                 rule.get("strictness", 1),
                 source=source,
@@ -434,7 +443,7 @@ class StoryStateManager:
                 intent_tag=intent_tag,
             )
             if summary_lines is not None:
-                summary_lines.append(get_resource("label.new_rule") + f": {rule.get('content')}")
+                summary_lines.append(get_ai_resource("label.new_rule") + f": {rule.get('content')}")
 
         for rel in data.get("relationships", []):
             self.memory.add_relationship(
@@ -447,24 +456,24 @@ class StoryStateManager:
             )
             if summary_lines is not None:
                 summary_lines.append(
-                    get_resource("label.relationship") + f": {rel.get('source')} <-> {rel.get('target')}"
+                    get_ai_resource("label.relationship") + f": {rel.get('source')} <-> {rel.get('target')}"
                 )
 
         for ev in data.get("events", []):
             self.memory.add_event(
-                event_name=ev.get("event_name", "Untitled Event"),
+                event_name=ev.get("event_name", get_ai_resource("default.untitled_event")),
                 description=ev.get("description", ""),
-                timestamp_str=ev.get("timestamp_str", "Unknown Time"),
+                timestamp_str=ev.get("timestamp_str", get_ai_resource("default.unknown_time")),
                 impact_level=ev.get("impact_level", 1),
                 related_entities=ev.get("related_entities", []),
-                location=ev.get("location", "Unknown"),
+                location=ev.get("location", get_ai_resource("default.unknown")),
                 source=source,
                 chapter_num=chapter_num,
                 source_commit_id=source_commit_id,
                 intent_tag=intent_tag,
             )
             if summary_lines is not None:
-                summary_lines.append(get_resource("label.event") + f": {ev.get('event_name')}")
+                summary_lines.append(get_ai_resource("label.event") + f": {ev.get('event_name')}")
 
         for det in data.get("details", []):
             content = det.get("content")
@@ -484,26 +493,26 @@ class StoryStateManager:
         conflicts_after = self.memory.get_pending_conflict_count()
         new_conflicts = max(0, conflicts_after - conflicts_before)
         if summary_lines is not None and new_conflicts > 0:
-            summary_lines.append(get_resource("label.conflicts_pending", count=new_conflicts))
+            summary_lines.append(get_ai_resource("label.conflicts_pending", count=new_conflicts))
         return new_conflicts
 
     def sync_compact_archives(self) -> Dict[str, str]:
         chars = self.memory.get_all_characters()
-        char_lines = [get_resource("archive.char_header"), ""]
+        char_lines = [get_ai_resource("archive.char_header"), ""]
         if not chars:
-            char_lines.append(get_resource("archive.char_no_records"))
+            char_lines.append(get_ai_resource("archive.char_no_records"))
         else:
             for name, _, status in chars:
-                char_lines.append("- " + name + get_resource("ui.status_label", status=status))
+                char_lines.append("- " + name + get_ai_resource("ui.status_label", status=status))
 
         rules = self.memory.get_rules_by_category()
-        rule_lines = [get_resource("archive.rule_header"), ""]
+        rule_lines = [get_ai_resource("archive.rule_header"), ""]
         if not rules:
-            rule_lines.append(get_resource("archive.rule_no_records"))
+            rule_lines.append(get_ai_resource("archive.rule_no_records"))
         else:
             for category, content, strictness in rules:
                 rule_lines.append(
-                    get_resource("ui.rule_item_no_newline", category=category, content=content, strictness=strictness)
+                    get_ai_resource("ui.rule_item_no_newline", category=category, content=content, strictness=strictness)
                 )
         return {
             "characters_compact.md": "\n".join(char_lines),
@@ -519,9 +528,7 @@ class StoryStateManager:
         resolved = 0
         if rows:
             self.logger.warning("================================================================================")
-            self.logger.warning("WARNING: Auto-resolving pending BLOCKING conflicts using 'keep_existing' policy!")
-            self.logger.warning("This bypasses strict human triage. To enforce manual approval and block downstream tasks,")
-            self.logger.warning("change 'blocking_conflict_mode' in 'config.yaml' to 'manual_block'.")
+            self.logger.warning(get_message("memory.auto_resolve_warning"))
             self.logger.warning("--------------------------------------------------------------------------------")
             for row in rows:
                 conflict_id = row[0]
@@ -529,14 +536,21 @@ class StoryStateManager:
                 entity_key = row[2]
                 conflict_type = row[3]
                 chapter_num = row[5]
-                self.logger.warning(
-                    f"-> Auto-resolved BLOCKING Conflict #{conflict_id}: type='{conflict_type}', "
-                    f"entity='{entity_type}:{entity_key}', chapter={chapter_num} (action=keep_existing)"
-                )
+                self.logger.warning(get_message(
+                    "memory.auto_resolved",
+                    conflict_id=conflict_id,
+                    conflict_type=conflict_type,
+                    entity_type=entity_type,
+                    entity_key=entity_key,
+                    chapter_num=chapter_num,
+                ))
                 ok = self.memory.resolve_conflict(
                     conflict_id,
                     action="keep_existing",
-                    resolver_note=f"auto-strict keep_existing for {conflict_type}",
+                    resolver_note=get_ai_resource(
+                        "memory.auto_resolver_note",
+                        conflict_type=conflict_type,
+                    ),
                     source="auto_resolver",
                 )
                 if ok:

@@ -34,7 +34,8 @@ The `test/` directory contains standard test suites covering every layer of the 
 | Test File | Target Coverage | Key Validations |
 | :--- | :--- | :--- |
 | `test_db.py` | Database Layer | SQLite database initialization, upserts, schema logic, and basic FAISS semantic index setup. |
-| `test_i18n.py` | Localization Layer | Language configuration, key resolution, and translation fallbacks. |
+| `test_i18n.py` | Localization Layer | Language configuration, independent human/AI namespaces, key parity, collision rejection, and translation fallbacks. |
+| `test_cli_bootstrap.py` | CLI Bootstrap | Help output without model validation and friendly configuration-error exits without tracebacks. |
 | `test_project_logic.py` | Core Workspace Layer | Validation of chapter files, overview directories, paths, and templates. |
 | `test_model_config.py` | Model Configurations | Parsing of `config.yaml`, mapping of provider credentials, and context parameters. |
 | `test_init_seed.py` | System Seeding | Setup and generation of early seed plot outlines, world bibles, and compact archives. |
@@ -42,6 +43,7 @@ The `test/` directory contains standard test suites covering every layer of the 
 | `test_embedding_validation.py`| Vector Embeddings | Vector boundaries, dimension constraints, FAISS indexing, and semantic search. |
 | `test_ai_debate_conflict_resolver.py` | Dynamic Debate Gating | Resolving narrative character contradictions and rule collisions in bounded debates. |
 | `test_regressions.py` | Comprehensive Integration | Intent gates, rollback, database commits, language security, and structural rollbacks. |
+| `test_workflow_integration.py` | End-to-End Lifecycle | Write loop, conflict lifecycle, dry-run/bulk replay, retrieval chain, DMC scopes, and current ATT persistence lifecycle. |
 
 ## 4. Best Practices for Writing Tests
 
@@ -67,7 +69,9 @@ Always ensure that in system code, dependencies such as `self.memory` are guarde
 
 ## 5. Mocking in the ATT Architecture
 
-Under the ATT topology, multiple agents (such as `Historian_Critic`, `Prose_Scanner`, `Consensus_Planner`) and the auditing `SupervisoryTeam` share the parent workflow's **`critic_client`** for generation. The older structure of mocking individual LLM clients (`planner_client`, `scanner_client`) separately does not apply.
+ATT teams now receive explicit `roles_and_models` bindings from the configured role registry. Tests may mock the registered generator handler, or stub `_create_att_team` and `_execute_att_discussion` with the current member-prefixed transcript format. Assertions must select the designated arbitrator (`Consensus_Planner`, `Reviewer_Arbitrator`, `Editor_In_Chief`, and so on), never the first `Final Answer:` in a transcript.
+
+Every real `ATTManager` test must use an isolated `config.ATT_STATE_DB_PATH` and call `close_autonomy()` in cleanup. Shutdown writes a full snapshot and releases ATT's single-writer lease.
 
 When mocking the shared `critic_client.generate`, observe the following guidelines:
 

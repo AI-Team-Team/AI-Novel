@@ -3,16 +3,31 @@ import sys
 import re
 import yaml
 
-def _load_yaml(path: str) -> dict:
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
+from workflow_components.bootstrap_messages import ConfigurationError, get_bootstrap_message
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 config_yaml_path = os.path.join(project_root, "config.yaml")
 model_config_dir = os.path.join(project_root, "config")
 model_config_path = os.path.join(model_config_dir, "ai_model_config.yaml")
+
+
+def _config_message(key: str, **kwargs) -> str:
+    current_config = globals().get("_cfg", {})
+    project = current_config.get("project", {}) if isinstance(current_config, dict) else {}
+    language = project.get("language", "en") if isinstance(project, dict) else "en"
+    return get_bootstrap_message(project_root, language, key, **kwargs)
+
+
+def _load_yaml(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigurationError(
+            _config_message("config.yaml_invalid", path=path, error=exc)
+        ) from exc
 
 # Helper to expand environment variables
 def _resolve_config_field(val: str, field_name: str, api_type: str) -> str:
@@ -89,27 +104,31 @@ if is_testing:
 else:
     # 1. Load config.yaml
     _cfg = _load_yaml(config_yaml_path)
+    if not isinstance(_cfg, dict):
+        raise ConfigurationError(_config_message("config.root_not_mapping"))
 
     # 2. Load config/ai_model_config.yaml. If missing, raise error directly
     if not os.path.exists(model_config_path):
-        raise FileNotFoundError(
-            f"Configuration Error: The model registry file was not found at '{model_config_path}'. "
-            f"Please create this file to register your AI models before running the application."
+        raise ConfigurationError(
+            _config_message("config.model_registry_missing", path=model_config_path)
         )
 
     _model_registry = _load_yaml(model_config_path)
+    if not isinstance(_model_registry, dict):
+        raise ConfigurationError(
+            _config_message("config.model_registry_not_mapping")
+        )
 
     # 3. Validate Role Assignment in config.yaml
     models_section = _cfg.get("models", {})
     if not isinstance(models_section, dict):
-        raise ValueError("The 'models' section in config.yaml must be a dictionary.")
+        raise ConfigurationError(_config_message("config.models_not_mapping"))
 
     for role in REQUIRED_ROLES:
         val = models_section.get(role)
         if not val or not str(val).strip():
-            raise ValueError(
-                f"Configuration Error: Assigned role '{role}' in config.yaml has an empty or missing value. "
-                f"Please specify a valid registered model key from config/ai_model_config.yaml."
+            raise ConfigurationError(
+                _config_message("config.role_missing", role=role)
             )
 
     # 4. Resolve registered models from ai_model_config.yaml
@@ -150,14 +169,20 @@ else:
     def _resolve_role_config(role_name: str) -> dict:
         model_key = models_section.get(role_name)
         if model_key in disabled_models:
-            raise ValueError(
-                f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
-                f"which is explicitly disabled in config/ai_model_config.yaml."
+            raise ConfigurationError(
+                _config_message(
+                    "config.role_model_disabled",
+                    role=role_name,
+                    model=model_key,
+                )
             )
         if model_key not in resolved_models:
-            raise ValueError(
-                f"Configuration Error: Role '{role_name}' is assigned to model key '{model_key}', "
-                f"which is not registered in config/ai_model_config.yaml."
+            raise ConfigurationError(
+                _config_message(
+                    "config.role_model_unregistered",
+                    role=role_name,
+                    model=model_key,
+                )
             )
         return resolved_models[model_key]
 
@@ -173,6 +198,14 @@ else:
 def _get(section: str, key: str, default):
     return _cfg.get(section, {}).get(key, default)
 
+
+def language_guard_defaults(language: str) -> tuple[float, float]:
+    """Return the target/other confidence defaults for a language profile."""
+
+    if str(language).lower().startswith("zh"):
+        return 0.70, 0.30
+    return 0.60, 0.10
+
 # Expose key variables for other parts of the application or tests
 # =============================
 # Paths / Project
@@ -184,8 +217,29 @@ OUTPUT_DIR = _get("project", "output_dir", "novel/main_text")
 FRAME_DIR = _get("project", "frame_dir", "novel/frame")
 PROCESS_DIR = _get("project", "process_dir", "novel/process")
 LANGUAGE = _get("project", "language", "en")
-MIN_CONFIDENCE = float(_get("project", "min_confidence", 0.60))
-MAX_OTHER_CONFIDENCE = float(_get("project", "max_other_confidence", 0.10))
+_default_min_confidence, _default_other_confidence = language_guard_defaults(LANGUAGE)
+MIN_CONFIDENCE = float(
+    _get("project", "min_confidence", _default_min_confidence)
+)
+MAX_OTHER_CONFIDENCE = float(
+    _get("project", "max_other_confidence", _default_other_confidence)
+)
+if not 0.0 <= MIN_CONFIDENCE <= 1.0:
+    raise ConfigurationError(
+        _config_message(
+            "config.language_threshold_range",
+            key="min_confidence",
+            value=MIN_CONFIDENCE,
+        )
+    )
+if not 0.0 <= MAX_OTHER_CONFIDENCE <= 1.0:
+    raise ConfigurationError(
+        _config_message(
+            "config.language_threshold_range",
+            key="max_other_confidence",
+            value=MAX_OTHER_CONFIDENCE,
+        )
+    )
 
 # =============================
 # Retrieval / Constraint Controls
@@ -208,14 +262,78 @@ CONFLICT_DISCUSSION_ROUNDS = int(_get("workflow", "conflict_discussion_rounds", 
 BLOCKING_CONFLICT_MODE = str(_get("workflow", "blocking_conflict_mode", "manual_block")).lower()
 
 # =============================
+# Database Audit Controls
+# =============================
+DATABASE_AUDIT_ENABLED = bool(_get("database_audit", "enabled", True))
+DATABASE_AUDIT_FAILURE_POLICY = str(
+    _get("database_audit", "failure_policy", "deny")
+).strip().lower()
+if DATABASE_AUDIT_FAILURE_POLICY not in {"deny", "allow"}:
+    raise ConfigurationError(_config_message("config.database_audit_policy"))
+
+_database_audit_scopes = _get("database_audit", "scopes", {})
+if not isinstance(_database_audit_scopes, dict):
+    raise ConfigurationError(_config_message("config.database_audit_scopes_mapping"))
+DATABASE_AUDIT_SCOPES = {
+    "att_sql": True,
+    "chapter_fact_batches": True,
+    "commit_replay": True,
+    "conflict_resolution": True,
+    "conflict_queue_writes": False,
+    "character_writes": False,
+    "relationship_writes": False,
+    "world_rule_writes": False,
+    "timeline_event_writes": False,
+    "vector_writes": False,
+    "revision_writes": False,
+    "chapter_commit_metadata": False,
+    "schema_metadata": False,
+    "maintenance": False,
+}
+for _scope_name, _scope_enabled in _database_audit_scopes.items():
+    if _scope_name not in DATABASE_AUDIT_SCOPES:
+        raise ConfigurationError(
+            _config_message("config.database_audit_scope_unknown", scope=_scope_name)
+        )
+    if not isinstance(_scope_enabled, bool):
+        raise ConfigurationError(
+            _config_message("config.database_audit_scope_boolean", scope=_scope_name)
+        )
+    DATABASE_AUDIT_SCOPES[_scope_name] = _scope_enabled
+
+_database_audit_failure_policies = _get("database_audit", "failure_policies", {})
+if not isinstance(_database_audit_failure_policies, dict):
+    raise ConfigurationError(_config_message("config.database_audit_failures_mapping"))
+DATABASE_AUDIT_FAILURE_POLICIES = {}
+for _scope_name, _failure_policy in _database_audit_failure_policies.items():
+    if _scope_name not in DATABASE_AUDIT_SCOPES:
+        raise ConfigurationError(
+            _config_message(
+                "config.database_audit_failure_scope_unknown",
+                scope=_scope_name,
+            )
+        )
+    _normalized_policy = str(_failure_policy).strip().lower()
+    if _normalized_policy not in {"deny", "allow"}:
+        raise ConfigurationError(
+            _config_message(
+                "config.database_audit_failure_policy",
+                scope=_scope_name,
+            )
+        )
+    DATABASE_AUDIT_FAILURE_POLICIES[_scope_name] = _normalized_policy
+
+# =============================
 # Autonomy / Delegation Controls
 # =============================
 ENABLE_AUTONOMY_SUITE = bool(_get("autonomy", "enable_autonomy_suite", True))
+ATT_STATE_DB_PATH = str(
+    _get("autonomy", "state_db_path", os.path.join(PROCESS_DIR, "att_state_v6.db"))
+)
 ENABLE_AUTONOMOUS_QUERIES = bool(_get("autonomy", "enable_autonomous_queries", False))
 ENABLE_DYNAMIC_DELEGATION = bool(_get("autonomy", "enable_dynamic_delegation", False))
 MAX_DELEGATION_DEPTH = int(_get("autonomy", "max_delegation_depth", 2))
 MIN_SUBAGENT_TEAM_SIZE = int(_get("autonomy", "min_subagent_team_size", 3))
-MAX_SUBAGENT_TEAM_SIZE = int(_get("autonomy", "max_subagent_team_size", 3))
 SUBAGENT_DISCUSSION_ROUNDS = int(_get("autonomy", "subagent_discussion_rounds", 1))
 REACT_MAX_STEPS = int(_get("autonomy", "react_max_steps", 5))
 INBOX_SUMMARIZE_THRESHOLD_CHARS = int(_get("autonomy", "inbox_summarize_threshold_chars", 1500))
@@ -230,4 +348,3 @@ ENABLE_EMERGENCY_WAKEUP = bool(_get("autonomy", "enable_emergency_wakeup", True)
 EMERGENCY_DISCUSSION_ROUNDS = int(_get("autonomy", "emergency_discussion_rounds", 1))
 TOOL_CALLING_MODE = str(_get("autonomy", "tool_calling_mode", "auto"))
 MAX_TOOL_ROUNDS = int(_get("autonomy", "max_tool_rounds", 5))
-STRICT_STATE_PERSISTENCE = bool(_get("autonomy", "strict_state_persistence", True))

@@ -6,9 +6,7 @@ import time
 from typing import Dict, List, Optional, Set, Tuple
 
 import config
-
-
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
 
 class WorkflowResumeMixin:
     def _load_previous_summary(self, chapter_num: int) -> Optional[str]:
@@ -24,12 +22,12 @@ class WorkflowResumeMixin:
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            lines = [get_resource("label.chapter_summary_prefix", chapter_num=chapter_num)]
+            lines = [get_ai_resource("label.chapter_summary_prefix", chapter_num=chapter_num)]
             labels = [
-                ("new_characters", get_resource("label.new_character")),
-                ("updated_characters", get_resource("label.updated_character")),
-                ("new_rules", get_resource("label.new_rule")),
-                ("events", get_resource("label.event")),
+                ("new_characters", get_ai_resource("label.new_character")),
+                ("updated_characters", get_ai_resource("label.updated_character")),
+                ("new_rules", get_ai_resource("label.new_rule")),
+                ("events", get_ai_resource("label.event")),
             ]
             for key, label in labels:
                 for item in data.get(key, []):
@@ -68,10 +66,7 @@ class WorkflowResumeMixin:
                     json.loads(text)
             return True
         except Exception:
-            self.logger.warning(
-                "Detected corrupted discussion index JSONL. Discarding file: %s",
-                path,
-            )
+            self.logger.warning(get_message("resume.corrupt_index", path=path))
             self._safe_remove(path)
             return False
 
@@ -185,11 +180,7 @@ class WorkflowResumeMixin:
 
     def _handle_invalid_global_generated_artifact(self, path: str, reason: str):
         base = os.path.basename(path)
-        self.logger.warning(
-            "Discarding invalid global generated artifact: %s (reason=%s)",
-            path,
-            reason,
-        )
+        self.logger.warning(get_message("resume.invalid_global", path=path, reason=reason))
         self._safe_remove(path)
         if base == "discussion_index.jsonl":
             return
@@ -197,10 +188,7 @@ class WorkflowResumeMixin:
             self._sync_compact_archives()
             return
         if self._is_global_critical_generated_file(path):
-            raise RuntimeError(
-                f"Critical generated artifact invalid and discarded: {path}. "
-                "Please regenerate project frames (run --start again) before --auto resume."
-            )
+            raise RuntimeError(get_message("resume.critical_global", path=path))
 
     def _chapter_related_paths(self, chapter_num: int) -> Dict[str, List[str]]:
         suffix = self._num3(chapter_num)
@@ -276,11 +264,7 @@ class WorkflowResumeMixin:
 
     def _discard_chapter_artifacts(self, chapter_num: int, reason: str):
         suffix = self._num3(chapter_num)
-        self.logger.warning(
-            "Discarding chapter artifacts and incomplete commits for Chapter %s (reason=%s).",
-            suffix,
-            reason,
-        )
+        self.logger.warning(get_message("resume.discard_chapter", chapter=suffix, reason=reason))
         paths = self._chapter_related_paths(chapter_num)
         for path in paths["files"]:
             self._safe_remove(path)
@@ -297,9 +281,9 @@ class WorkflowResumeMixin:
             self.in_auto_mode = False
 
     def _run_continuous_loop_impl(self, start_chapter: int, count: int):
-        self.logger.info(f"Starting continuous generation from Chapter {start_chapter} for {count} chapters.")
+        self.logger.info(get_message("resume.start", chapter=start_chapter, count=count))
         if count <= 0:
-            self.logger.info("Count <= 0. Skip continuous generation.")
+            self.logger.info(get_message("resume.empty_count"))
             return
 
         if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
@@ -320,7 +304,7 @@ class WorkflowResumeMixin:
             if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
                 self.att_manager.dashboard.current_auto_chapter = i + 1
                 self.att_manager.dashboard.refresh()
-            self.logger.info(f"--- Processing Chapter {current_chapter} ---")
+            self.logger.info(get_message("resume.processing", chapter=current_chapter))
             
             max_retries = getattr(config, "AUTO_GENERATION_MAX_RETRIES", 3)
             for attempt in range(max_retries):
@@ -333,10 +317,7 @@ class WorkflowResumeMixin:
 
                 completed_ok, completed_reason = self._validate_chapter_completion_integrity(current_chapter)
                 if completed_ok:
-                    self.logger.info(
-                        "Chapter %s already has scanned facts. Skip generation and continue from existing summary.",
-                        self._num3(current_chapter),
-                    )
+                    self.logger.info(get_message("resume.chapter_complete", chapter=self._num3(current_chapter)))
                     previous_summary = self._load_previous_summary(current_chapter)
                     break # Success, move to next chapter
 
@@ -351,13 +332,13 @@ class WorkflowResumeMixin:
                     previous_summary = facts
                     break # Success, move to next chapter
                 except Exception as e:
-                    self.logger.error(f"Error generating Chapter {current_chapter} (Attempt {attempt + 1}/{max_retries}): {e}")
+                    self.logger.error(get_message("resume.chapter_error", chapter=current_chapter, attempt=attempt + 1, max_attempts=max_retries, error=e))
                     if attempt == max_retries - 1:
-                        raise RuntimeError(f"Failed to generate Chapter {current_chapter} after {max_retries} attempts. Aborting.")
-                    self.logger.info("Discarding artifacts and retrying...")
+                        raise RuntimeError(get_message("resume.chapter_exhausted", chapter=current_chapter, max_attempts=max_retries))
+                    self.logger.info(get_message("resume.retry"))
                     self._discard_chapter_artifacts(current_chapter, reason=f"generation_error_attempt_{attempt + 1}")
                     time.sleep(2)
 
             time.sleep(1)
 
-        self.logger.info("Continuous generation complete.")
+        self.logger.info(get_message("resume.complete"))

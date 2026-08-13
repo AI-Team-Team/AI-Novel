@@ -8,6 +8,21 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 from rich.panel import Panel
+from workflow_components.bootstrap_messages import (
+    ConfigurationError,
+    get_bootstrap_message,
+    load_project_language,
+)
+
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+CLI_LANGUAGE = load_project_language(PROJECT_ROOT)
+
+
+def get_message(key: str, **kwargs) -> str:
+    """Resolve CLI text without importing the fully validated runtime config."""
+
+    return get_bootstrap_message(PROJECT_ROOT, CLI_LANGUAGE, key, **kwargs)
 
 # Setup global rich console
 console = Console()
@@ -21,29 +36,34 @@ logging.basicConfig(
 )
 
 def print_custom_help():
-    console.print("[bold]Usage:[/bold] main.py [bold cyan][OPTIONS][/bold cyan]\n")
-    console.print("AI Novelist CLI\n")
-    console.print("[bold yellow]Options:[/bold yellow]")
+    console.print(f"[bold]{get_message('cli.usage')}[/bold]\n")
+    console.print(f"{get_message('cli.title')}\n")
+    console.print(f"[bold yellow]{get_message('cli.options')}[/bold yellow]")
     
     options = [
-        ("--init", "Initialize only the novel workspace and create novel/Novel_Overview.md"),
-        ("--start", "Start creation from novel/Novel_Overview.md"),
-        ("--plan [bold magenta]INTEGER[/bold magenta]", "Generate a guide for a specific chapter number"),
-        ("--write [bold magenta]INTEGER[/bold magenta]", "Write a specific chapter number (requires guide)"),
-        ("--scan [bold magenta]INTEGER[/bold magenta]", "Scan a chapter for facts and update memory"),
-        ("--auto [bold magenta]START_CHAPTER[/bold magenta] [bold magenta]COUNT[/bold magenta]", "Continuously generate COUNT chapters starting from START_CHAPTER."),
-        ("--conflicts", "List pending conflicts in the DB queue"),
-        ("--conflicts-json", "List pending conflicts with machine-readable diagnostics JSON"),
-        ("--conflicts-triage", "List pending conflicts with priority and suggested actions"),
-        ("--level [bold magenta]TEXT[/bold magenta]", "Optional conflict level filter for --conflicts/--conflicts-json/--conflicts-triage"),
-        ("--resolve-conflict [bold magenta]CONFLICT_ID[/bold magenta] [bold magenta]ACTION[/bold magenta]", "Resolve one conflict with ACTION in {keep_existing, apply_incoming}"),
-        ("--resolve-note [bold magenta]TEXT[/bold magenta]", "Optional note for conflict resolution"),
-        ("--failed-commits", "List failed chapter commits"),
-        ("--replay-commit [bold magenta]TEXT[/bold magenta]", "Replay a failed chapter commit by COMMIT_ID"),
-        ("--triage-batch [bold magenta]LIMIT[/bold magenta]", "Resolve up to LIMIT NON_BLOCKING conflicts via keep_existing"),
-        ("--rebuild-vectors", "Rebuild FAISS index from vector_metadata deterministically"),
-        ("--ai-resolve-conflicts", "Enable Multi-Agent Cooperative Debate Conflict Resolver to automatically resolve blocking conflicts"),
-        ("--help, -h", "Show this message and exit.")
+        ("--init", get_message("cli.option.init")),
+        ("--start", get_message("cli.option.start")),
+        ("--plan [bold magenta]INTEGER[/bold magenta]", get_message("cli.option.plan")),
+        ("--write [bold magenta]INTEGER[/bold magenta]", get_message("cli.option.write")),
+        ("--scan [bold magenta]INTEGER[/bold magenta]", get_message("cli.option.scan")),
+        ("--auto [bold magenta]START_CHAPTER COUNT[/bold magenta]", get_message("cli.option.auto")),
+        ("--conflicts", get_message("cli.option.conflicts")),
+        ("--conflicts-json", get_message("cli.option.conflicts_json")),
+        ("--conflicts-triage", get_message("cli.option.conflicts_triage")),
+        ("--level [bold magenta]TEXT[/bold magenta]", get_message("cli.option.level")),
+        ("--resolve-conflict [bold magenta]CONFLICT_ID ACTION[/bold magenta]", get_message("cli.option.resolve_conflict")),
+        ("--resolve-note [bold magenta]TEXT[/bold magenta]", get_message("cli.option.resolve_note")),
+        ("--failed-commits", get_message("cli.option.failed_commits")),
+        ("--replay-commit [bold magenta]TEXT[/bold magenta]", get_message("cli.option.replay_commit")),
+        ("--replay-failed-bulk", get_message("cli.option.replay_bulk")),
+        ("--replay-dry-run", get_message("cli.option.replay_dry_run")),
+        ("--replay-limit [bold magenta]INTEGER[/bold magenta]", get_message("cli.option.replay_limit")),
+        ("--replay-max-attempts [bold magenta]INTEGER[/bold magenta]", get_message("cli.option.replay_attempts")),
+        ("--replay-policy [bold magenta]TEXT[/bold magenta]", get_message("cli.option.replay_policy")),
+        ("--triage-batch [bold magenta]LIMIT[/bold magenta]", get_message("cli.option.triage_batch")),
+        ("--rebuild-vectors", get_message("cli.option.rebuild_vectors")),
+        ("--ai-resolve-conflicts", get_message("cli.option.ai_resolve")),
+        ("--help, -h", get_message("cli.option.help"))
     ]
     
     for opt, desc in options:
@@ -58,95 +78,110 @@ def main(
     init: bool = typer.Option(
         False,
         "--init",
-        help="Initialize only the novel workspace and create novel/Novel_Overview.md",
+        help=get_message("cli.option.init"),
     ),
     start: bool = typer.Option(
         False,
         "--start",
-        help="Start creation from novel/Novel_Overview.md",
+        help=get_message("cli.option.start"),
     ),
     plan: Optional[int] = typer.Option(
         None,
         "--plan",
-        help="Generate a guide for a specific chapter number",
+        help=get_message("cli.option.plan"),
     ),
     write: Optional[int] = typer.Option(
         None,
         "--write",
-        help="Write a specific chapter number (requires guide)",
+        help=get_message("cli.option.write"),
     ),
     scan: Optional[int] = typer.Option(
         None,
         "--scan",
-        help="Scan a chapter for facts and update memory",
+        help=get_message("cli.option.scan"),
     ),
     auto: Optional[Tuple[int, int]] = typer.Option(
         None,
         "--auto",
-        help="Continuously generate COUNT chapters starting from START_CHAPTER.",
+        help=get_message("cli.option.auto"),
     ),
     conflicts: bool = typer.Option(
         False,
         "--conflicts",
-        help="List pending conflicts in the DB queue",
+        help=get_message("cli.option.conflicts"),
     ),
     conflicts_json: bool = typer.Option(
         False,
         "--conflicts-json",
-        help="List pending conflicts with machine-readable diagnostics JSON",
+        help=get_message("cli.option.conflicts_json"),
     ),
     conflicts_triage: bool = typer.Option(
         False,
         "--conflicts-triage",
-        help="List pending conflicts with priority and suggested actions",
+        help=get_message("cli.option.conflicts_triage"),
     ),
     level: Optional[str] = typer.Option(
         None,
         "--level",
-        help="Optional conflict level filter for --conflicts/--conflicts-json/--conflicts-triage",
+        help=get_message("cli.option.level"),
     ),
     resolve_conflict: Optional[Tuple[str, str]] = typer.Option(
         None,
         "--resolve-conflict",
         metavar="CONFLICT_ID ACTION",
-        help="Resolve one conflict with ACTION in {keep_existing, apply_incoming}",
+        help=get_message("cli.option.resolve_conflict"),
     ),
     resolve_note: str = typer.Option(
         "",
         "--resolve-note",
-        help="Optional note for conflict resolution",
+        help=get_message("cli.option.resolve_note"),
     ),
     failed_commits: bool = typer.Option(
         False,
         "--failed-commits",
-        help="List failed chapter commits",
+        help=get_message("cli.option.failed_commits"),
     ),
     replay_commit: Optional[str] = typer.Option(
         None,
         "--replay-commit",
-        help="Replay a failed chapter commit by COMMIT_ID",
+        help=get_message("cli.option.replay_commit"),
+    ),
+    replay_failed_bulk: bool = typer.Option(
+        False, "--replay-failed-bulk", help=get_message("cli.option.replay_bulk")
+    ),
+    replay_dry_run: bool = typer.Option(
+        False, "--replay-dry-run", help=get_message("cli.option.replay_dry_run")
+    ),
+    replay_limit: int = typer.Option(
+        50, "--replay-limit", help=get_message("cli.option.replay_limit")
+    ),
+    replay_max_attempts: int = typer.Option(
+        3, "--replay-max-attempts", help=get_message("cli.option.replay_attempts")
+    ),
+    replay_policy: str = typer.Option(
+        "continue", "--replay-policy", help=get_message("cli.option.replay_policy")
     ),
     triage_batch: Optional[int] = typer.Option(
         None,
         "--triage-batch",
         metavar="LIMIT",
-        help="Resolve up to LIMIT NON_BLOCKING conflicts via keep_existing",
+        help=get_message("cli.option.triage_batch"),
     ),
     rebuild_vectors: bool = typer.Option(
         False,
         "--rebuild-vectors",
-        help="Rebuild FAISS index from vector_metadata deterministically",
+        help=get_message("cli.option.rebuild_vectors"),
     ),
     ai_resolve_conflicts: bool = typer.Option(
         False,
         "--ai-resolve-conflicts",
-        help="Enable Multi-Agent Cooperative Debate Conflict Resolver to automatically resolve blocking conflicts",
+        help=get_message("cli.option.ai_resolve"),
     ),
     help: bool = typer.Option(
         False,
         "--help",
         "-h",
-        help="Show this message and exit.",
+        help=get_message("cli.option.help"),
     ),
 ):
     # Check if any options were explicitly passed.
@@ -165,6 +200,8 @@ def main(
         resolve_note != "",
         failed_commits,
         replay_commit is not None,
+        replay_failed_bulk,
+        replay_dry_run,
         triage_batch is not None,
         rebuild_vectors,
         ai_resolve_conflicts,
@@ -174,6 +211,7 @@ def main(
         print_custom_help()
         raise typer.Exit()
 
+    workflow = None
     try:
         from workflow import WorkflowManager
 
@@ -182,14 +220,14 @@ def main(
             workflow.ai_resolve_conflicts = True
 
         if init:
-            console.print(Panel("[bold cyan]Initializing Novel Workspace[/bold cyan]", border_style="cyan"))
+            console.print(Panel(get_message("cli.init_title"), border_style="cyan"))
             overview_path = workflow.initialize_novel_workspace()
-            console.print("\n[bold green]✔ Initialization Complete[/bold green]")
-            console.print(f"Novel overview template: [bold white]{overview_path}[/bold white]")
-            console.print("Next step: fill [bold green]Novel_Overview.md[/bold green], then run [bold yellow]--start[/bold yellow]")
+            console.print(get_message("cli.init_done"))
+            console.print(get_message("cli.overview_path", path=overview_path))
+            console.print(get_message("cli.init_next"))
 
         elif start:
-            console.print(Panel("[bold cyan]Starting From Novel Overview[/bold cyan]", border_style="cyan"))
+            console.print(Panel(get_message("cli.start_title"), border_style="cyan"))
             
             def run_start():
                 overview_text = workflow.load_novel_overview()
@@ -200,24 +238,25 @@ def main(
                 return bible_path
 
             bible_path = workflow.run_with_dashboard(run_start)
-            console.print("\n[bold green]✔ Success![/bold green] Setup and Chapter 001 generation complete.")
-            console.print(f"World Bible: [bold white]{bible_path}[/bold white]")
-            console.print("Chapter 001 saved to [bold white]novel/main_text/chapters/chapter_001.md[/bold white]")
+            console.print(get_message("cli.start_done"))
+            console.print(get_message("cli.world_path", path=bible_path))
+            console.print(get_message("cli.chapter_one_path", path="novel/main_text/chapters/chapter_001.md"))
 
         elif plan is not None:
-            console.print(f"Generating guide for Chapter [bold yellow]{plan}[/bold yellow]...")
+            console.print(get_message("cli.generating_guide", chapter=plan))
             workflow.run_with_dashboard(workflow.generate_chapter_guide, plan)
-            console.print("[bold green]✔ Done.[/bold green]")
+            console.print(get_message("cli.done"))
 
         elif write is not None:
-            console.print(f"Writing Chapter [bold yellow]{write}[/bold yellow]...")
+            console.print(get_message("cli.writing_chapter", chapter=write))
             # Read the guide first
             guide_path = workflow.get_guide_path(write)
             if not os.path.exists(guide_path):
-                console.print(
-                    f"[bold red]Error:[/bold red] Guide for chapter {write} not found at "
-                    f"[bold white]{guide_path}[/bold white]. Run [bold yellow]--plan {write}[/bold yellow] first."
-                )
+                console.print(get_message(
+                    "cli.guide_missing",
+                    chapter=write,
+                    path=guide_path,
+                ))
                 raise typer.Exit(code=1)
 
             with open(guide_path, "r", encoding="utf-8") as f:
@@ -228,21 +267,21 @@ def main(
                 workflow.review_revise_and_scan(write, guide, chapter_text)
 
             workflow.run_with_dashboard(run_write)
-            console.print("[bold green]✔ Done.[/bold green]")
+            console.print(get_message("cli.done"))
 
         elif scan is not None:
-            console.print(f"Scanning Chapter [bold yellow]{scan}[/bold yellow]...")
+            console.print(get_message("cli.scanning_chapter", chapter=scan))
             workflow.run_with_dashboard(workflow.scan_chapter, scan)
-            console.print("[bold green]✔ Done.[/bold green]")
+            console.print(get_message("cli.done"))
 
         elif auto is not None:
             start_chap, count = auto
             console.print(Panel(
-                f"[bold cyan]Auto-Generating {count} chapters starting from Chapter {start_chap}[/bold cyan]",
+                get_message("cli.auto_title", count=count, chapter=start_chap),
                 border_style="cyan"
             ))
             workflow.run_with_dashboard(workflow.run_continuous_loop, start_chap, count)
-            console.print("\n[bold green]✔ Batch generation complete.[/bold green]")
+            console.print(get_message("cli.auto_done"))
 
         elif conflicts_json:
             rows = workflow.list_pending_conflicts_detailed(limit=200, level=level)
@@ -254,18 +293,18 @@ def main(
         elif conflicts_triage:
             rows = workflow.list_pending_conflict_triage(limit=200, level=level)
             if not rows:
-                console.print("[bold yellow]No pending conflicts.[/bold yellow]")
+                console.print(get_message("cli.no_conflicts"))
                 return
 
-            table = Table(title="[bold yellow]Pending Conflicts (Triage)[/bold yellow]", show_header=True, header_style="bold magenta")
-            table.add_column("ID", style="dim", width=6)
-            table.add_column("Level")
-            table.add_column("Priority", justify="center")
-            table.add_column("Type", style="cyan")
-            table.add_column("Entity", style="green")
-            table.add_column("Suggested Action")
-            table.add_column("Reason Label", style="yellow")
-            table.add_column("Chapter", justify="right")
+            table = Table(title=get_message("cli.title.triage"), show_header=True, header_style="bold magenta")
+            table.add_column(get_message("cli.column.id"), style="dim", width=6)
+            table.add_column(get_message("cli.column.level"))
+            table.add_column(get_message("cli.column.priority"), justify="center")
+            table.add_column(get_message("cli.column.type"), style="cyan")
+            table.add_column(get_message("cli.column.entity"), style="green")
+            table.add_column(get_message("cli.column.action"))
+            table.add_column(get_message("cli.column.reason"), style="yellow")
+            table.add_column(get_message("cli.column.chapter"), justify="right")
 
             for row in rows:
                 blocking_level = row.get('blocking_level')
@@ -288,19 +327,19 @@ def main(
         elif conflicts:
             rows = workflow.list_pending_conflicts(limit=200, level=level)
             if not rows:
-                console.print("[bold yellow]No pending conflicts.[/bold yellow]")
+                console.print(get_message("cli.no_conflicts"))
                 return
 
-            table = Table(title="[bold red]Pending Conflicts[/bold red]", show_header=True, header_style="bold magenta")
-            table.add_column("ID", style="dim", width=6)
-            table.add_column("Type", style="cyan")
-            table.add_column("Entity", style="green")
-            table.add_column("Source", style="dim")
-            table.add_column("Chapter", justify="right")
-            table.add_column("Created At", style="dim")
-            table.add_column("Level")
-            table.add_column("Priority", justify="center")
-            table.add_column("Suggested Action")
+            table = Table(title=get_message("cli.title.pending"), show_header=True, header_style="bold magenta")
+            table.add_column(get_message("cli.column.id"), style="dim", width=6)
+            table.add_column(get_message("cli.column.type"), style="cyan")
+            table.add_column(get_message("cli.column.entity"), style="green")
+            table.add_column(get_message("cli.column.source"), style="dim")
+            table.add_column(get_message("cli.column.chapter"), justify="right")
+            table.add_column(get_message("cli.column.created"), style="dim")
+            table.add_column(get_message("cli.column.level"))
+            table.add_column(get_message("cli.column.priority"), justify="center")
+            table.add_column(get_message("cli.column.action"))
 
             for row in rows:
                 blocking_level = row[7] if len(row) > 7 else "BLOCKING"
@@ -328,33 +367,30 @@ def main(
             try:
                 conflict_id = int(conflict_id_text)
             except ValueError:
-                console.print(f"[bold red]Error:[/bold red] Invalid CONFLICT_ID: {conflict_id_text}")
+                console.print(get_message("cli.invalid_conflict_id", conflict_id=conflict_id_text))
                 raise typer.Exit(code=1)
             ok = workflow.resolve_pending_conflict(conflict_id, action, note=resolve_note)
             if ok:
-                console.print(f"[bold green]✔[/bold green] Resolved conflict [bold white]{conflict_id}[/bold white] with action=[bold yellow]{action}[/bold yellow]")
+                console.print(get_message("cli.resolve_success", conflict_id=conflict_id, action=action))
             else:
-                console.print(
-                    f"[bold red]Error:[/bold red] Failed to resolve conflict [bold white]{conflict_id}[/bold white]. "
-                    f"Check id/action and ensure conflict is still pending."
-                )
+                console.print(get_message("cli.resolve_failure", conflict_id=conflict_id))
                 raise typer.Exit(code=1)
 
         elif failed_commits:
             rows = workflow.list_failed_chapter_commits(limit=50)
             if not rows:
-                console.print("[bold yellow]No failed chapter commits.[/bold yellow]")
+                console.print(get_message("cli.no_failed_commits"))
                 return
 
-            table = Table(title="[bold red]Failed Chapter Commits[/bold red]", show_header=True, header_style="bold magenta")
-            table.add_column("Commit ID", style="dim")
-            table.add_column("Chapter", justify="right")
-            table.add_column("Source", style="cyan")
-            table.add_column("Status", style="bold red")
-            table.add_column("Conflicts", justify="center")
-            table.add_column("Replays", justify="center")
-            table.add_column("Created At", style="dim")
-            table.add_column("Error Message", style="yellow")
+            table = Table(title=get_message("cli.title.failed_commits"), show_header=True, header_style="bold magenta")
+            table.add_column(get_message("cli.column.commit_id"), style="dim")
+            table.add_column(get_message("cli.column.chapter"), justify="right")
+            table.add_column(get_message("cli.column.source"), style="cyan")
+            table.add_column(get_message("cli.column.status"), style="bold red")
+            table.add_column(get_message("cli.column.conflicts"), justify="center")
+            table.add_column(get_message("cli.column.replays"), justify="center")
+            table.add_column(get_message("cli.column.created"), style="dim")
+            table.add_column(get_message("cli.column.error"), style="yellow")
 
             for row in rows:
                 table.add_row(
@@ -372,31 +408,66 @@ def main(
         elif replay_commit is not None:
             ok = workflow.replay_chapter_commit(replay_commit)
             if ok:
-                console.print(f"[bold green]✔[/bold green] Replay succeeded for commit [bold white]{replay_commit}[/bold white]")
+                console.print(get_message("cli.replay_success", commit_id=replay_commit))
             else:
-                console.print(f"[bold red]Error:[/bold red] Replay failed for commit [bold white]{replay_commit}[/bold white]")
+                console.print(get_message("cli.replay_failure", commit_id=replay_commit))
                 raise typer.Exit(code=1)
+
+        elif replay_failed_bulk:
+            report = workflow.bulk_replay_failed_commits(
+                limit=replay_limit,
+                dry_run=replay_dry_run,
+                max_attempts=replay_max_attempts,
+                retry_policy=replay_policy,
+            )
+            table = Table(
+                title=get_message("cli.bulk.title"),
+                show_header=True,
+                header_style="bold magenta",
+            )
+            for column in (
+                get_message("cli.column.commit_id"),
+                get_message("cli.column.chapter"),
+                get_message("cli.column.eligible"),
+                get_message("cli.column.attempts"),
+                get_message("cli.column.outcome"),
+                get_message("cli.column.error"),
+            ):
+                table.add_column(column)
+            for item in report["commits"]:
+                table.add_row(
+                    str(item["commit_id"]),
+                    str(item["chapter_num"]),
+                    str(item["can_replay"]),
+                    str(item.get("attempts", 0)),
+                    str(item.get("outcome", "preview")),
+                    "; ".join(item.get("validation_errors", [])) or str(item.get("error_after", "")),
+                )
+            console.print(table)
+            console.print(get_message("cli.bulk.summary", **report))
 
         elif triage_batch is not None:
             resolved = workflow.batch_triage_non_blocking(limit=max(0, triage_batch))
-            console.print(f"[bold green]✔[/bold green] Batch triage resolved [bold yellow]{resolved}[/bold yellow] NON_BLOCKING conflicts.")
+            console.print(get_message("cli.triage_done", count=resolved))
 
         elif rebuild_vectors:
             stats = workflow.rebuild_vector_index()
-            console.print(
-                f"[bold green]✔[/bold green] Vector rebuild done. "
-                f"rebuilt=[bold yellow]{stats.get('rebuilt', 0)}[/bold yellow] "
-                f"skipped=[bold yellow]{stats.get('skipped', 0)}[/bold yellow]"
-            )
+            console.print(get_message("cli.rebuild_done", rebuilt=stats.get('rebuilt', 0), skipped=stats.get('skipped', 0)))
 
+    except ConfigurationError as e:
+        console.print(get_message("cli.configuration_error", error=e))
+        sys.exit(2)
     except KeyboardInterrupt:
-        console.print("\n[bold yellow][INFO] Operation interrupted by user.[/bold yellow]")
+        console.print(get_message("cli.interrupted"))
         raise typer.Exit(code=130)
     except typer.Exit as e:
         sys.exit(e.code)
     except Exception as e:
-        console.print(f"\n[bold red][ERROR][/bold red] {e}")
+        console.print(get_message("cli.error", error=e))
         sys.exit(1)
+    finally:
+        if workflow is not None:
+            workflow.close()
 
 if __name__ == "__main__":
     app()

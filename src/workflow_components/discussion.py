@@ -2,6 +2,8 @@ import os
 import time
 from typing import Optional
 
+from workflow_components.resources import get_message
+
 class DiscussionLogger:
     def __init__(self, log_dir: str):
         self.log_dir = log_dir
@@ -34,14 +36,14 @@ class DiscussionLogger:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         entry_id = f"entry-{time.time_ns()}"
         body = content if content.endswith("\n") else f"{content}\n"
-        block = (
-            f"{'=' * 108}\n"
-            f"ENTRY_ID: {entry_id}\n"
-            f"TIMESTAMP: {timestamp}\n"
-            f"TITLE: {title}\n"
-            f"{'-' * 108}\n"
-            f"{body}"
-            f"{'=' * 108}\n"
+        block = get_message(
+            "log.discussion_block",
+            separator="=" * 108,
+            divider="-" * 108,
+            entry_id=entry_id,
+            timestamp=timestamp,
+            title=title,
+            body=body,
         )
 
         with open(self.all_log_path(), "a", encoding="utf-8") as f:
@@ -78,15 +80,15 @@ class DiscussionLogger:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         entry_id = f"entry-{time.time_ns()}"
         body = content if content.endswith("\n") else f"{content}\n"
-        block = (
-            f"{'=' * 108}\n"
-            f"ENTRY_ID: {entry_id}\n"
-            f"TIMESTAMP: {timestamp}\n"
-            f"TEAM_ID: {team_id}\n"
-            f"TITLE: {title}\n"
-            f"{'-' * 108}\n"
-            f"{body}"
-            f"{'=' * 108}\n"
+        block = get_message(
+            "log.att_discussion_block",
+            separator="=" * 108,
+            divider="-" * 108,
+            entry_id=entry_id,
+            timestamp=timestamp,
+            team_id=team_id,
+            title=title,
+            body=body,
         )
 
         with open(self.all_log_path(), "a", encoding="utf-8") as f:
@@ -103,4 +105,3 @@ class DiscussionLogger:
                     f.write("")
             with open(chapter_path, "a", encoding="utf-8") as f:
                 f.write(block)
-

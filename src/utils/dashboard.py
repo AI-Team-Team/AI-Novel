@@ -12,6 +12,7 @@ from rich.align import Align
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.layout import Layout
+from workflow_components.resources import get_message
 
 class DashboardLogHandler(logging.Handler):
     def __init__(self, dashboard: 'ConsoleDashboard'):
@@ -28,22 +29,15 @@ class DashboardLogHandler(logging.Handler):
                 first_line = msg.split("\n")[0]
                 if len(first_line) > 100:
                     first_line = first_line[:97] + "..."
-                msg = f"{first_line} [dim](detailed log stored to file)[/dim]"
+                msg = get_message("dashboard.log.detail_stored", message=first_line)
             
             timestamp = time.strftime("%H:%M:%S")
             if level == "WARNING":
-                log_fmt = f"[dim]{timestamp}[/dim] ⚠️  [bold yellow]WARNING[/bold yellow]: {msg}"
+                log_fmt = get_message("dashboard.log.warning", timestamp=timestamp, message=msg)
             elif level in ("ERROR", "CRITICAL"):
-                log_fmt = f"[dim]{timestamp}[/dim] ❌ [bold red]ERROR[/bold red]: {msg}"
+                log_fmt = get_message("dashboard.log.error", timestamp=timestamp, message=msg)
             else:
-                if "Successfully" in msg or "Success" in msg or "✔" in msg:
-                    log_fmt = f"[dim]{timestamp}[/dim] [bold green]✔ {msg}[/bold green]"
-                elif "Spawning" in msg or "spawned" in msg:
-                    log_fmt = f"[dim]{timestamp}[/dim] [cyan]👥 {msg}[/cyan]"
-                elif "Saved" in msg:
-                    log_fmt = f"[dim]{timestamp}[/dim] [dim]💾 {msg}[/dim]"
-                else:
-                    log_fmt = f"[dim]{timestamp}[/dim] [white]{msg}[/white]"
+                log_fmt = get_message("dashboard.log.info", timestamp=timestamp, message=msg)
             
             self.dashboard.add_log(log_fmt)
         except Exception:
@@ -64,7 +58,8 @@ class DashboardRenderable:
 class ConsoleDashboard:
     def __init__(self, workflow_manager=None):
         self.workflow_manager = workflow_manager
-        self.active_stage = "Ready to start"
+        self.active_stage = get_message("dashboard.ready")
+        self.running = False
         self.recent_activities = deque(maxlen=15)
         self.recent_logs = deque(maxlen=15)
         self.current_auto_chapter = 0
@@ -142,7 +137,24 @@ class ConsoleDashboard:
             icon = "✨"
             color = "green"
 
-        activity_str = f"[dim]{timestamp}[/dim] {icon} [bold magenta]{agent_name}[/bold magenta]: [{color}]{activity_type}: {clean_content}[/{color}]"
+        display_type = get_message(
+            {
+                "Thought": "dashboard.activity.thought",
+                "Action": "dashboard.activity.action",
+                "Observation": "dashboard.activity.observation",
+                "Final Answer": "dashboard.activity.final_answer",
+            }.get(activity_type, "dashboard.activity.other"),
+            activity_type=activity_type,
+        )
+        activity_str = get_message(
+            "dashboard.activity.line",
+            timestamp=timestamp,
+            icon=icon,
+            agent_name=agent_name,
+            color=color,
+            activity_type=display_type,
+            content=clean_content,
+        )
         self.recent_activities.append(activity_str)
         self.refresh()
 
@@ -242,23 +254,27 @@ class ConsoleDashboard:
 
         # 1. Header with title, active stage and spinner/progress
         header_text = Text.assemble(
-            ("✨ AI NOVEL WRITER WORKSPACE ", "bold cyan"),
+            (get_message("dashboard.header"), "bold cyan"),
             ("✨", "bold yellow")
         )
         
         progress_text = ""
         if self.total_auto_chapters > 0:
-            progress_text = f" | [bold yellow]Progress: Chapter {self.current_auto_chapter} of {self.total_auto_chapters}[/bold yellow]"
+            progress_text = get_message(
+                "dashboard.progress",
+                current=self.current_auto_chapter,
+                total=self.total_auto_chapters,
+            )
             
         stage_text = Text.assemble(
-            ("Current Stage: ", "bold white"),
+            (get_message("dashboard.current_stage"), "bold white"),
             (f"{self.active_stage}", "bold green"),
             (progress_text, "white")
         )
 
         # Spinner - only animate spinner if running, hide if finished/error/ready
         spinner = None
-        if "Finished" not in self.active_stage and "Error" not in self.active_stage and "Ready" not in self.active_stage:
+        if self.running:
             spinner = Spinner("dots", style="green")
 
         header_table = Table.grid(expand=True)
@@ -274,7 +290,7 @@ class ConsoleDashboard:
         layout["header"].update(Panel(header_table, border_style="grey37"))
 
         # 2. Dynamic ATT Tree Lineage
-        tree = Tree("[bold royal_blue1]📁 Root AI Level 0 (Architect)[/bold royal_blue1]")
+        tree = Tree(get_message("dashboard.root_node"))
         
         if self.workflow_manager and hasattr(self.workflow_manager, "att_manager"):
             manager = self.workflow_manager.att_manager
@@ -291,31 +307,61 @@ class ConsoleDashboard:
 
             for team in level_1_teams:
                 # Level 1 Tree Node
-                team_desc = f"[bold cyan]👥 {team.team_id} ({team.preset_name})[/bold cyan] - [dim]{team.team_purpose}[/dim]"
+                team_desc = get_message(
+                    "dashboard.team_node",
+                    team_id=team.team_id,
+                    preset_name=team.preset_name,
+                    purpose=team.team_purpose,
+                )
                 if team.chapter_num is not None:
-                    team_desc += f" [yellow](Ch {team.chapter_num})[/yellow]"
+                    team_desc += get_message(
+                        "dashboard.team_chapter", chapter_num=team.chapter_num
+                    )
                 team_tree = tree.add(team_desc)
                 
                 # Show active agents inside the team
                 for member in team.members:
                     status = getattr(team, "status_map", {}).get(member.name, "Idle")
                     status_color = "green" if status == "Idle" else "yellow"
-                    team_tree.add(f"[bold white]👤 {member.role}[/bold white] ({member.name}): [{status_color}]{status}[/{status_color}]")
+                    display_status = (
+                        get_message("dashboard.status_idle") if status == "Idle" else status
+                    )
+                    team_tree.add(get_message(
+                        "dashboard.member_node",
+                        role=member.role,
+                        name=member.name,
+                        status_color=status_color,
+                        status=display_status,
+                    ))
                 
                 # Check for Level 2 children spawned by members of this team
                 for child in active_teams:
                     child_parent = child.parent_team or manager.find_parent_team(child)
                     if child_parent and child_parent.team_id == team.team_id:
-                        child_desc = f"[bold magenta]└── 👥 {child.team_id} ({child.preset_name})[/bold magenta] - [dim]{child.team_purpose}[/dim]"
+                        child_desc = get_message(
+                            "dashboard.child_team_node",
+                            team_id=child.team_id,
+                            preset_name=child.preset_name,
+                            purpose=child.team_purpose,
+                        )
                         child_tree = team_tree.add(child_desc)
                         for member in child.members:
                             status = getattr(child, "status_map", {}).get(member.name, "Idle")
                             status_color = "green" if status == "Idle" else "yellow"
-                            child_tree.add(f"[bold white]👤 {member.role}[/bold white] ({member.name}): [{status_color}]{status}[/{status_color}]")
+                            display_status = (
+                                get_message("dashboard.status_idle") if status == "Idle" else status
+                            )
+                            child_tree.add(get_message(
+                                "dashboard.member_node",
+                                role=member.role,
+                                name=member.name,
+                                status_color=status_color,
+                                status=display_status,
+                            ))
 
         tree_panel = Panel(
             tree,
-            title="[bold blue]Lineage Tree of Active ATTs[/bold blue]",
+            title=get_message("dashboard.tree_title"),
             title_align="left",
             border_style="grey37",
             expand=True
@@ -328,11 +374,11 @@ class ConsoleDashboard:
             for act in self.recent_activities:
                 activities_text.append_text(Text.from_markup(act + "\n"))
         else:
-            activities_text.append_text(Text("[dim]Waiting for agent activities...[/dim]\n"))
+            activities_text.append_text(Text.from_markup(get_message("dashboard.waiting_activities")))
 
         activities_panel = Panel(
             activities_text,
-            title="[bold yellow]Real-Time ReAct Agent Loop[/bold yellow]",
+            title=get_message("dashboard.activities_title"),
             title_align="left",
             border_style="grey37",
             expand=True
@@ -345,11 +391,11 @@ class ConsoleDashboard:
             for log in self.recent_logs:
                 logs_text.append_text(Text.from_markup(log + "\n"))
         else:
-            logs_text.append_text(Text("[dim]No system logs yet...[/dim]\n"))
+            logs_text.append_text(Text.from_markup(get_message("dashboard.no_logs")))
 
         logs_panel = Panel(
             logs_text,
-            title="[bold green]System & Memory Log[/bold green]",
+            title=get_message("dashboard.logs_title"),
             title_align="left",
             border_style="grey37",
             expand=True

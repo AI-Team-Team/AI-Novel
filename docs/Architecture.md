@@ -266,13 +266,13 @@ Agents in dynamic teams execute tasks inside a robust **Reasoning & Action (ReAc
 
 ### 5. Database Management Committee (DMC)
 
-To secure the SQLite memory store, a dedicated 3-AI **Database Management Committee** audits all dynamic SQLite queries executed by ATT agents via tool calling, guarding against malicious SQL injection, schema corruption, and logical rule contradictions. Trusted backend pipeline operations bypass this layer.
+To secure the hybrid memory store, a dedicated 3-AI **Database Management Committee** provides configurable pre-write governance. Direct ATT SQL, chapter batches, commit replay, conflict resolution, individual `MemoryManager` fact writes, revision/conflict-queue writes, vector writes, commit/schema metadata, and maintenance are independent scopes. The default profile audits transaction boundaries and fails closed; users can enable every row-level scope or exempt trusted paths individually.
 
 ### 6. Autonomy Toggles in Configuration
 
 The entire autonomy framework is highly modular and can be fully enabled/disabled or tuned in `config.yaml` under `autonomy:`:
 
-* `enable_autonomy_suite`: Master toggle to load/skip all autonomy components.
+* `enable_autonomy_suite`: Toggle for narrative autonomy components. ATT core can still initialize when the independently configured Database Management Committee requires it.
 * `enable_autonomous_queries`: Toggle for ReAct tool use (SQLite, FAISS, Gated file paginators).
 * `enable_dynamic_delegation`: Toggle for hierarchical subagent tree spawning.
 * `enable_memory_compression`: Toggle for O(1) multi-turn memory compression/summarization.
@@ -282,14 +282,16 @@ The entire autonomy framework is highly modular and can be fully enabled/disable
 * `emergency_discussion_rounds`: Number of debate rounds for emergency wakeups.
 * `tool_calling_mode`: Selection of tool calling strategy (`"text_react"`, `"native"`, or `"auto"`).
 * `max_tool_rounds`: Step cap for native parallel tool call executions.
-* `strict_state_persistence`: Enables ORM cascading deletes for unreferenced messages/agreements.
+
+ATT persistence is restored from `autonomy.state_db_path` through the current asynchronous ATT state API. AI-Novel requests a full snapshot during orderly shutdown so agents, teams, messages, and agreements remain mutually consistent.
 
 ## Commit Replay Recovery
 
 * `chapter_commits` now tracks `error_message`, `replay_count`, and `last_replayed_at`.
-* Failed scan commits can be replayed from persisted `payload_json` through CLI (`--replay-commit`).
-* Replay runs the same DB mutation path (`apply_fact_payload`) under a fresh transaction and promotes commit status back to `COMPLETED` on success.
-* FAISS can be deterministically rebuilt from `vector_metadata` (`--rebuild-vectors`) to recover DB/vector alignment.
+* Failed scan commits can be replayed individually (`--replay-commit`) or in bulk (`--replay-failed-bulk`). Bulk replay supports a write-free preview, payload schema validation, per-commit reports, bounded retry attempts, and continue/stop failure policy.
+* Replay runs the same DB mutation path (`apply_fact_payload`) under a fresh transaction. Fact mutations and promotion of the commit row to `COMPLETED` are committed atomically.
+* FAISS is persisted with staged atomic replacement coordinated with the SQLite transaction. Startup reconciliation compares active metadata IDs with the loaded index and rebuilds mismatches or load failures without deleting source metadata.
+* Deterministic rebuilds retain soft-deleted skipped rows and permanent row-level reasons in `vector_rebuild_audit`, grouped by `vector_rebuild_runs`.
 
 ## Initialization Seeding
 
@@ -332,13 +334,13 @@ Ensures output consistency through a multi-step process with robust retry bounda
 
 1. **Name Exclusion**: Known character names from the DB are excluded from text before computing CJK/Latin ratios, preventing false positives when Chinese names appear in English text (or vice versa).
 2. **Confidence Ratio**: Calculates CJK/Latin character ratio on the name-excluded text.
-3. **Threshold Check**: Uses direct thresholds (Chinese ≥ 20% CJK; English ≥ 60% Latin with ≤ 10% CJK) to determine if text is in the expected language.
-4. **Safety Net**: For English mode, only triggers rewrite if CJK content exceeds 30% after name exclusion.
+3. **Threshold Check**: Uses `project.min_confidence` and `project.max_other_confidence`. The language-aware defaults are Chinese ≥ 70% CJK with ≤ 30% Latin, and English ≥ 60% Latin with ≤ 10% CJK. The checked ratios exclude known character names.
+4. **Config Validation**: Both confidence values must remain between 0 and 1. Chinese mode deliberately tolerates more Latin text because names, abbreviations, and technical tokens are common in otherwise Chinese prose.
 5. **Bounded LLM Rewrite Loop**: If the language check fails, the system executes an automatic LLM-driven rewrite loop. The maximum number of attempts is fully configurable via `language_rewrite_max_attempts` inside `config.yaml` (default: 2):
    * The first attempt uses a standard translation/rewrite instruction prompt.
    * Any subsequent attempts (up to the configured limit) use a highly strict **escalation prompt** explicitly demanding the pure expected language and the elimination of foreign mixed characters.
    * If all attempts fail to meet the confidence thresholds, the system raises a `RuntimeError` (fail-fast boundary) to prevent corrupted text from entering the draft.
-6. **Critic Review**: Language consistency is also part of the Critic's system prompt responsibilities.
+6. **Critic Review**: Language consistency is also part of the Critic's system prompt responsibilities. A future optional AI-assisted language judge is tracked separately; deterministic scoring remains the current enforcement gate.
 
 ## Customization
 
@@ -346,16 +348,18 @@ Ensures output consistency through a multi-step process with robust retry bounda
 
 Agent roles are completely decoupled from model specifications:
 
-* **`config.yaml`**: Assigns agent roles (`architect_model`, `planner_model`, `writer_model`, `critic_model`, `scanner_model`, `embedding_model`, and `default_model`) to named model registration keys. Any missing or empty role assignment, or assignment to a disabled model key, triggers a validation error immediately.
+* **`config.yaml`**: Assigns agent roles (`architect_model`, `planner_model`, `writer_model`, `critic_model`, `scanner_model`, `embedding_model`, and `default_model`) to named model registration keys. Any missing or empty role assignment, or assignment to a disabled model key, produces a localized configuration error when a workflow command loads the runtime. Lightweight commands such as `--help` do not import or validate the model registry.
 * **`config/ai_model_config.yaml`**: Registers credentials, providers, endpoints, and identifiers for LLM and embedding models under named keys. Unset API keys are left blank and do not trigger automatic defaults. Missing `model_name` attributes automatically fall back to the YAML key. Additionally, supports an optional `enabled` flag (boolean, defaults to `true`). If set to `false`, the model registry will skip registration for that key, deactivating the model.
 
 ### i18n & Prompts
 
-All system prompts and user-facing strings are managed in the `i18n/` directory:
+Localized content is separated by audience in the `i18n/` directory:
 
-* **AI Fragments & Templates**: `i18n/AI/{language_code}/`
-  * `fragments.json`: Short instructions and labels used in Context.
+* **AI-Visible Resources**: `i18n/AI/{language_code}/`
+  * `fragments.json`: Short model instructions and labels.
+  * `context.json`: Retrieval, story-state, conflict, and archive context rendered into model input.
+  * `runtime.json`: ATT committee definitions, tool descriptions/results, audit prompts, and other model-visible runtime text.
   * `templates.md`: Multi-line system prompts and task instructions (organized by `## Key`).
-* **User Messages**: `i18n/messages/{language_code}/ui.json` (UI strings, summaries, and reports).
+* **Human-Visible Messages**: `i18n/messages/{language_code}/runtime.json` contains CLI text, dashboard labels, logs, operational errors, and human-readable reports.
 
-You can add new languages or modify behavior by creating/editing files in these directories and updating `config.LANGUAGE`.
+`LanguageResources` loads and validates these namespaces independently. `get_ai_resource()` cannot read human messages, `get_message()` cannot read AI resources, duplicate keys inside or across the namespaces fail fast, and non-English languages must match the English key sets independently. The CLI bootstrap reads only `project.language` and human message JSON, avoiding the runtime configuration/model import cycle. You can add a language by creating both directory trees and updating `config.LANGUAGE`.

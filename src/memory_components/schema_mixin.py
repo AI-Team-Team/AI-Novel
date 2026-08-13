@@ -146,6 +146,39 @@ class MemorySchemaMixin:
             '''
         )
 
+        self.cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS vector_rebuild_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                status TEXT NOT NULL,
+                source_count INTEGER DEFAULT 0,
+                rebuilt_count INTEGER DEFAULT 0,
+                skipped_count INTEGER DEFAULT 0,
+                target_dim INTEGER,
+                error_message TEXT
+            )
+            '''
+        )
+
+        self.cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS vector_rebuild_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                old_faiss_id INTEGER,
+                new_faiss_id INTEGER,
+                content TEXT,
+                status TEXT NOT NULL,
+                reason TEXT,
+                metadata TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES vector_rebuild_runs(run_id)
+            )
+            '''
+        )
+
         # Create indexes
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_status_id ON conflict_queue(status, id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_conflict_queue_entity ON conflict_queue(entity_type, entity_key)")
@@ -159,6 +192,7 @@ class MemorySchemaMixin:
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_world_rules_active ON world_rules(is_deleted, category, strictness, id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_timeline_active ON timeline_events(is_deleted, event_name, timestamp_str, id)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_metadata_active ON vector_metadata(is_deleted, faiss_id)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_rebuild_audit_run ON vector_rebuild_audit(run_id, status, id)")
 
     def _init_sqlite(self):
         self.conn = sqlite3.connect(self.db_path)
@@ -174,6 +208,11 @@ class MemorySchemaMixin:
         return row[0] if row else None
 
     def set_schema_meta(self, key: str, value: str):
+        self._audit_database_operation(
+            "schema_metadata",
+            "set_schema_meta",
+            {"key": key, "value": value},
+        )
         self.cursor.execute(
             """
             INSERT INTO schema_meta (key, value) VALUES (?, ?)

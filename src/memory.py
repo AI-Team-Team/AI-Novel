@@ -1,11 +1,13 @@
 import json
 import os
 import re
+import uuid
 import numpy as np
 from typing import List, Dict, Optional
 from memory_components.schema_mixin import MemorySchemaMixin
 from memory_components.conflict_commit_mixin import MemoryConflictCommitMixin
 from utils.helpers import get_nested, set_nested, normalize_text
+from workflow_components.resources import get_ai_resource, get_message
 
 # Conditional import for FAISS
 try:
@@ -27,6 +29,10 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         self._in_batch = False
         self._faiss_dirty = False
         self._faiss_backup = None
+        self._faiss_had_index = False
+        self._embedding_dim_backup = None
+        self._faiss_load_error_backup = None
+        self.faiss_load_error = None
         self.db_committee = None
         
         db_dir = os.path.dirname(self.db_path)
@@ -48,6 +54,26 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
     def set_db_committee(self, db_committee):
         self.db_committee = db_committee
 
+    def _audit_database_operation(
+        self,
+        scope: str,
+        operation: str,
+        payload,
+        chapter_num: Optional[int] = None,
+    ) -> None:
+        committee = self.db_committee
+        if committee is None or not committee.should_audit(scope):
+            return
+        approved, reason = committee.audit_operation(
+            scope, operation, payload, chapter_num
+        )
+        if not approved:
+            raise PermissionError(
+                get_message(
+                    "error.database_audit_denied", operation=operation, reason=reason
+                )
+            )
+
     def _maybe_commit(self):
         if self.conn and not self._in_batch:
             self.conn.commit()
@@ -57,39 +83,130 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         if not self._in_batch:
             self.save_faiss()
 
+    def _stage_faiss_index(self, index=None) -> str:
+        target = index if index is not None else self.index
+        if target is None or faiss is None:
+            raise RuntimeError(get_message("runtime.vector_index_unavailable"))
+        parent = os.path.dirname(self.faiss_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        staged = f"{self.faiss_path}.staged-{uuid.uuid4().hex}"
+        try:
+            faiss.write_index(target, staged)
+        except Exception:
+            self._safe_remove(staged)
+            raise
+        return staged
+
+    @staticmethod
+    def _safe_remove(path: Optional[str]) -> None:
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    def _install_staged_faiss(self, staged: str):
+        backup = None
+        if os.path.exists(self.faiss_path):
+            backup = f"{self.faiss_path}.backup-{uuid.uuid4().hex}"
+            os.replace(self.faiss_path, backup)
+        try:
+            os.replace(staged, self.faiss_path)
+        except Exception:
+            if backup and os.path.exists(backup):
+                os.replace(backup, self.faiss_path)
+            raise
+        return backup
+
+    def _restore_faiss_file(self, backup: Optional[str]) -> None:
+        if backup and os.path.exists(backup):
+            if os.path.exists(self.faiss_path):
+                os.remove(self.faiss_path)
+            os.replace(backup, self.faiss_path)
+        elif os.path.exists(self.faiss_path):
+            os.remove(self.faiss_path)
+
     def begin_batch(self):
         if not self.conn or self._in_batch:
             return
-        self._in_batch = True
         self.conn.execute("BEGIN")
+        self._in_batch = True
+        self._faiss_had_index = self.index is not None
+        self._embedding_dim_backup = self.embedding_dim
+        self._faiss_load_error_backup = self.faiss_load_error
         # Keep an in-memory snapshot so failed batches can restore FAISS state.
         if faiss is not None and self.index is not None:
             try:
                 self._faiss_backup = faiss.clone_index(self.index)
             except Exception:
+                self.conn.rollback()
+                self._in_batch = False
                 self._faiss_backup = None
+                self._faiss_had_index = False
+                self._embedding_dim_backup = None
+                self._faiss_load_error_backup = None
+                raise
+
+    def _restore_batch_memory_state(self) -> None:
+        if self._faiss_backup is not None:
+            self.index = self._faiss_backup
+        elif not self._faiss_had_index:
+            self.index = None
+        if self._embedding_dim_backup is not None:
+            self.embedding_dim = self._embedding_dim_backup
+        self.faiss_load_error = self._faiss_load_error_backup
 
     def end_batch(self, success: bool = True):
         if not self.conn or not self._in_batch:
             return
+        staged = None
+        disk_backup = None
+        disk_installed = False
+        committed = False
         try:
-            if success:
-                self.conn.commit()
-                if self._faiss_dirty:
-                    self.save_faiss()
-            else:
+            if not success:
                 self.conn.rollback()
-                if self._faiss_backup is not None:
-                    self.index = self._faiss_backup
+                self._restore_batch_memory_state()
+                return
+
+            if self._faiss_dirty:
+                staged = self._stage_faiss_index()
+                disk_backup = self._install_staged_faiss(staged)
+                staged = None
+                disk_installed = True
+            self.conn.commit()
+            committed = True
+            self._safe_remove(disk_backup)
+        except Exception as exc:
+            if not committed:
+                restore_error = None
+                try:
+                    self.conn.rollback()
+                    if disk_installed:
+                        self._restore_faiss_file(disk_backup)
+                except Exception as rollback_exc:
+                    restore_error = rollback_exc
+                finally:
+                    self._restore_batch_memory_state()
+                if restore_error is not None:
+                    raise restore_error from exc
+            raise
         finally:
+            self._safe_remove(staged)
             self._in_batch = False
             self._faiss_dirty = False
             self._faiss_backup = None
+            self._faiss_had_index = False
+            self._embedding_dim_backup = None
+            self._faiss_load_error_backup = None
 
     def _init_faiss(self):
         """Initialize FAISS index for Tier 3."""
         if faiss is None:
-            print("Warning: FAISS not installed. Vector search will be disabled.")
+            print(get_message("runtime.faiss_unavailable"))
             self.index = None
             return
 
@@ -98,21 +215,90 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 self.index = faiss.read_index(self.faiss_path)
                 self.embedding_dim = self.index.d
             except Exception as e:
-                print(f"Error loading FAISS index: {e}. Vector search will start empty. Please run --rebuild-vectors to restore.")
+                print(get_message("runtime.faiss_load_failed", error=e))
+                self.faiss_load_error = str(e)
                 self.index = None
         else:
             self.index = None
 
     def save_faiss(self):
         if self.index and faiss:
-            faiss.write_index(self.index, self.faiss_path)
+            staged = self._stage_faiss_index()
+            backup = None
+            try:
+                backup = self._install_staged_faiss(staged)
+                staged = None
+                self._faiss_dirty = False
+            finally:
+                self._safe_remove(staged)
+                self._safe_remove(backup)
 
-    def _reset_vector_store(self, new_dim: int):
-        """Protect vector_metadata from silent deletion during dimension mismatch."""
-        raise RuntimeError(
-            f"Embedding dimension mismatch detected (new: {new_dim}, existing: {self.embedding_dim}). "
-            "Please run --rebuild-vectors to safely migrate existing vector data."
+    def reconcile_vector_store(self) -> Dict[str, object]:
+        """Compare active SQLite vector ids with the loaded FAISS index."""
+
+        self.cursor.execute(
+            "SELECT faiss_id FROM vector_metadata WHERE is_deleted = 0 ORDER BY faiss_id"
         )
+        ids = [int(row[0]) for row in self.cursor.fetchall()]
+        index_total = int(self.index.ntotal) if self.index is not None else 0
+        expected_ids = list(range(index_total))
+        reasons = []
+        if self.faiss_load_error:
+            reasons.append(f"index_load_error: {self.faiss_load_error}")
+        if self.index is None and ids:
+            reasons.append("active metadata exists without a loaded index")
+        elif ids != expected_ids:
+            reasons.append(
+                f"active metadata ids {ids} do not match index ids {expected_ids}"
+            )
+        return {
+            "healthy": not reasons,
+            "requires_rebuild": bool(reasons),
+            "active_metadata_count": len(ids),
+            "index_total": index_total,
+            "load_error": self.faiss_load_error,
+            "reasons": reasons,
+        }
+
+    def _reset_vector_store(
+        self,
+        new_dim: int,
+        preserve_metadata: bool = True,
+        reason: str = "manual_reset",
+    ) -> Dict[str, int]:
+        """Reset FAISS and SQLite metadata as one recoverable batch."""
+
+        if faiss is None:
+            raise RuntimeError(get_message("runtime.faiss_unavailable"))
+        if new_dim < 1:
+            raise ValueError(get_message("validation.vector_dimension"))
+        self._audit_database_operation(
+            "maintenance",
+            "reset_vector_store",
+            {"new_dim": new_dim, "preserve_metadata": preserve_metadata, "reason": reason},
+        )
+        started_batch = not self._in_batch
+        if started_batch:
+            self.begin_batch()
+        try:
+            self.cursor.execute("SELECT COUNT(*) FROM vector_metadata WHERE is_deleted = 0")
+            active_count = int(self.cursor.fetchone()[0])
+            if preserve_metadata:
+                self.cursor.execute("UPDATE vector_metadata SET is_deleted = 1 WHERE is_deleted = 0")
+            else:
+                self.cursor.execute("DELETE FROM vector_metadata")
+            self.index = faiss.IndexFlatL2(new_dim)
+            self.embedding_dim = new_dim
+            self.faiss_load_error = None
+            self.set_schema_meta("embedding_dim", str(new_dim))
+            self._faiss_dirty = True
+            if started_batch:
+                self.end_batch(success=True)
+            return {"preserved": active_count if preserve_metadata else 0, "deleted": 0 if preserve_metadata else active_count}
+        except Exception:
+            if started_batch:
+                self.end_batch(success=False)
+            raise
 
     @staticmethod
     def _deep_merge_dict(base: Dict, incoming: Dict) -> Dict:
@@ -160,6 +346,18 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
     ) -> int:
         if not name:
             return -1
+        self._audit_database_operation(
+            "character_writes",
+            "upsert_character",
+            {
+                "name": name,
+                "core_traits": core_traits,
+                "attributes": attributes,
+                "status": status,
+                "source": source,
+            },
+            chapter_num,
+        )
         existing = self.get_character(name)
         if existing:
             before_state = self._row_to_character_dict(existing)
@@ -205,7 +403,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                         existing_obj={"path": path, "value": old_value},
                         source=source,
                         chapter_num=chapter_num,
-                        notes="Blocked automatic mutation of protected identity field.",
+                        notes=get_ai_resource("memory.identity_conflict"),
                     )
                     if path.startswith("core_traits."):
                         set_nested(merged_core_traits, path.replace("core_traits.", "", 1), old_value)
@@ -228,7 +426,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                     existing_obj=before_state,
                     source=source,
                     chapter_num=chapter_num,
-                    notes="Blocked automatic status resurrection. Keep existing status until resolved.",
+                    notes=get_ai_resource("memory.resurrection_conflict"),
                 )
                 merged_status = existing[3]
 
@@ -296,6 +494,18 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         details = (details or "").strip()
         if not source or not target:
             return
+        self._audit_database_operation(
+            "relationship_writes",
+            "add_relationship",
+            {
+                "source": source,
+                "target": target,
+                "relation_type": relation_type,
+                "details": details,
+                "source_tag": source_tag,
+            },
+            chapter_num,
+        )
 
         self.cursor.execute(
             "SELECT source_name, target_name, relation_type, details FROM relationships WHERE source_name = ? AND target_name = ?",
@@ -321,7 +531,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 },
                 source=source_tag,
                 chapter_num=chapter_num,
-                notes="Blocked automatic relationship type overwrite.",
+                notes=get_ai_resource("memory.relationship_conflict"),
                 blocking_level=self.NON_BLOCKING,
             )
             return
@@ -347,7 +557,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 existing_obj={"dead_entities": dead_refs},
                 source=source_tag,
                 chapter_num=chapter_num,
-                notes="Relationship mutation references dead character(s). Review for timeline consistency.",
+                notes=get_ai_resource("memory.dead_relationship"),
                 blocking_level=self.NON_BLOCKING,
             )
 
@@ -358,7 +568,6 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                DO UPDATE SET relation_type=excluded.relation_type, details=excluded.details''',
             (source, target, relation_type, details)
         )
-        self._maybe_commit()
         self.cursor.execute(
             "SELECT source_name, target_name, relation_type, details FROM relationships WHERE source_name = ? AND target_name = ?",
             (source, target),
@@ -403,11 +612,23 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         source_commit_id: Optional[str] = None,
         intent_tag: str = "",
     ):
-        normalized_category = (category or "General").strip()
+        default_category = get_ai_resource("default.general")
+        normalized_category = (category or default_category).strip()
         normalized_content = (content or "").strip()
         normalized_intent = (intent_tag or "").strip()
         if not normalized_content:
             return -1
+        self._audit_database_operation(
+            "world_rule_writes",
+            "add_rule",
+            {
+                "category": normalized_category,
+                "content": normalized_content,
+                "strictness": strictness,
+                "source": source,
+            },
+            chapter_num,
+        )
         # NOTE: Heuristic rule contradiction checks have been removed from this layer.
         # Semantic contradiction detection between rules is now handled by the LLM Critic
         # in the workflow layer before facts are committed to the database.
@@ -470,13 +691,30 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         source_commit_id: Optional[str] = None,
         intent_tag: str = "",
     ):
-        normalized_event_name = (event_name or "Untitled Event").strip() or "Untitled Event"
+        default_event_name = get_ai_resource("default.untitled_event")
+        default_time = get_ai_resource("default.unknown_time")
+        default_location = get_ai_resource("default.unknown")
+        normalized_event_name = (event_name or default_event_name).strip() or default_event_name
         normalized_description = (description or "").strip()
-        normalized_timestamp = (timestamp_str or "Unknown Time").strip() or "Unknown Time"
-        normalized_location = (location or "Unknown").strip() or "Unknown"
+        normalized_timestamp = (timestamp_str or default_time).strip() or default_time
+        normalized_location = (location or default_location).strip() or default_location
         normalized_intent = (intent_tag or "").strip()
         normalized_related_entities = [str(x).strip() for x in (related_entities or []) if str(x).strip()]
         entities_json = json.dumps(normalized_related_entities, ensure_ascii=False, sort_keys=True)
+        self._audit_database_operation(
+            "timeline_event_writes",
+            "add_event",
+            {
+                "event_name": normalized_event_name,
+                "description": normalized_description,
+                "timestamp": normalized_timestamp,
+                "impact_level": impact_level,
+                "related_entities": normalized_related_entities,
+                "location": normalized_location,
+                "source": source,
+            },
+            chapter_num,
+        )
 
         # Deterministic guard: flag events that reference dead characters.
         # The event is still inserted (not blocked) — semantic judgment about whether
@@ -502,7 +740,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 existing_obj={"dead_entities": dead_entities},
                 source=source,
                 chapter_num=chapter_num,
-                notes="Event references dead character(s). Flagged for review.",
+                notes=get_ai_resource("memory.dead_event"),
                 blocking_level=self.NON_BLOCKING,
             )
 
@@ -557,7 +795,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 existing_obj=existing_signature,
                 source=source,
                 chapter_num=chapter_num,
-                notes="Blocked insertion due to conflicting event payload for same event key.",
+                notes=get_ai_resource("memory.event_conflict"),
             )
             return int(existing_id)
 
@@ -630,6 +868,13 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         if not embedding:
             return
 
+        self._audit_database_operation(
+            "vector_writes",
+            "add_semantic_fact",
+            {"content": content, "metadata": metadata or {}, "source": source},
+            chapter_num,
+        )
+
         embedding_np = np.array([embedding], dtype=np.float32)
         if embedding_np.ndim != 2:
             return
@@ -637,16 +882,6 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         actual_dim = embedding_np.shape[1]
         if actual_dim <= 0:
             return
-
-        if self.index is None:
-            self.embedding_dim = actual_dim
-            self.index = faiss.IndexFlatL2(actual_dim)
-            self.set_schema_meta("embedding_dim", str(actual_dim))
-        elif self.index.d != actual_dim:
-            raise RuntimeError(
-                f"Embedding dimension mismatch detected (new: {actual_dim}, existing: {self.index.d}). "
-                "Please run --rebuild-vectors to safely migrate existing vector data."
-            )
 
         normalized_content = (content or "").strip()
         if not normalized_content:
@@ -656,40 +891,54 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         if chapter_num is not None:
             normalized_metadata["chapter"] = chapter_num
         metadata_json = json.dumps(normalized_metadata, ensure_ascii=False, sort_keys=True)
-        self.cursor.execute(
-            """SELECT faiss_id
-               FROM vector_metadata
-               WHERE content = ? AND metadata = ? AND is_deleted = 0
-               ORDER BY faiss_id ASC
-               LIMIT 1""",
-            (normalized_content, metadata_json),
-        )
-        existing = self.cursor.fetchone()
-        if existing:
-            return
+        started_batch = not self._in_batch
+        if started_batch:
+            self.begin_batch()
+        try:
+            if self.index is None:
+                self.embedding_dim = actual_dim
+                self.index = faiss.IndexFlatL2(actual_dim)
+                self.set_schema_meta("embedding_dim", str(actual_dim))
+            elif self.index.d != actual_dim:
+                raise RuntimeError(get_message("runtime.vector_dim_mismatch", expected=self.index.d, actual=actual_dim))
 
-        self.index.add(embedding_np)
-        
-        # faiss_id corresponds to the sequential index
-        faiss_id = self.index.ntotal - 1
-        
-        self.cursor.execute(
-            """INSERT INTO vector_metadata
-               (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
-               VALUES (?, ?, ?, ?, 1, 0, ?)""",
-            (faiss_id, normalized_content, metadata_json, source_commit_id, normalized_intent),
-        )
-        self._log_revision(
-            entity_type="vector_detail",
-            entity_key=str(faiss_id),
-            action="insert",
-            before_obj=None,
-            after_obj={"faiss_id": faiss_id, "content": normalized_content, "metadata": normalized_metadata},
-            source=source,
-            chapter_num=chapter_num,
-        )
-        self._maybe_commit()
-        self._mark_faiss_dirty()
+            self.cursor.execute(
+                """SELECT faiss_id
+                   FROM vector_metadata
+                   WHERE content = ? AND metadata = ? AND is_deleted = 0
+                   ORDER BY faiss_id ASC
+                   LIMIT 1""",
+                (normalized_content, metadata_json),
+            )
+            if self.cursor.fetchone():
+                if started_batch:
+                    self.end_batch(success=True)
+                return
+
+            self.index.add(embedding_np)
+            faiss_id = self.index.ntotal - 1
+            self.cursor.execute(
+                """INSERT INTO vector_metadata
+                   (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
+                   VALUES (?, ?, ?, ?, 1, 0, ?)""",
+                (faiss_id, normalized_content, metadata_json, source_commit_id, normalized_intent),
+            )
+            self._log_revision(
+                entity_type="vector_detail",
+                entity_key=str(faiss_id),
+                action="insert",
+                before_obj=None,
+                after_obj={"faiss_id": faiss_id, "content": normalized_content, "metadata": normalized_metadata},
+                source=source,
+                chapter_num=chapter_num,
+            )
+            self._faiss_dirty = True
+            if started_batch:
+                self.end_batch(success=True)
+        except Exception:
+            if started_batch and self._in_batch:
+                self.end_batch(success=False)
+            raise
 
     def search_semantic(self, query_embedding: List[float], k: int = 5, filter_metadata: Dict = None) -> List[Dict]:
         """
@@ -745,123 +994,137 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 
         return results
 
-    def rebuild_vector_index_from_metadata(self, embedding_fn, include_deleted: bool = False) -> Dict[str, int]:
-        """
-        Rebuild FAISS index deterministically from vector_metadata content.
-        Active rows are loaded in stable order by old faiss_id, then remapped to contiguous ids.
-        """
+    def rebuild_vector_index_from_metadata(self, embedding_fn, include_deleted: bool = False) -> Dict[str, object]:
+        """Rebuild FAISS deterministically and retain a row-level audit trail."""
+
         if faiss is None:
-            print("Error: FAISS python package is not installed. Cannot rebuild.")
-            return {"rebuilt": 0, "skipped": 0}
-            
+            raise RuntimeError(get_message("runtime.faiss_unavailable"))
+        if self._in_batch:
+            raise RuntimeError(get_message("runtime.vector_batch_nested"))
+        self._audit_database_operation(
+            "maintenance",
+            "rebuild_vector_index",
+            {"include_deleted": include_deleted},
+        )
         if self.index is None:
-            print("Warning: FAISS index file is missing or corrupted. Rebuild will generate a new index.")
+            print(get_message("runtime.faiss_rebuild_notice"))
+
+        run_id = str(uuid.uuid4())
         where_clause = "" if include_deleted else "WHERE is_deleted = 0"
         self.cursor.execute(
             f"""SELECT faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag
-                FROM vector_metadata
-                {where_clause}
-                ORDER BY faiss_id ASC"""
+                FROM vector_metadata {where_clause} ORDER BY faiss_id ASC"""
         )
         rows = self.cursor.fetchall()
-        if not rows:
-            self.index = faiss.IndexFlatL2(self.embedding_dim)
-            self.save_faiss()
-            return {"rebuilt": 0, "skipped": 0}
-
-        old_index_backup = None
-        if faiss is not None and self.index is not None:
-            try:
-                old_index_backup = faiss.clone_index(self.index)
-            except Exception:
-                old_index_backup = None
+        self.cursor.execute(
+            """INSERT INTO vector_rebuild_runs
+               (run_id, status, source_count) VALUES (?, 'STARTED', ?)""",
+            (run_id, len(rows)),
+        )
+        self.conn.commit()
 
         rebuilt_rows = []
         skipped_rows = []
-        skipped = 0
         target_dim = None
-        for old_faiss_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag in rows:
-            emb = embedding_fn(content)
-            if not emb:
-                skipped += 1
-                skipped_rows.append(
-                    (old_faiss_id, content, metadata_json, source_commit_id, int(version or 1), int(is_deleted or 0), intent_tag or "")
-                )
-                continue
-            if target_dim is None:
-                target_dim = len(emb)
-            if len(emb) != target_dim:
-                skipped += 1
-                skipped_rows.append(
-                    (old_faiss_id, content, metadata_json, source_commit_id, int(version or 1), int(is_deleted or 0), intent_tag or "")
-                )
-                continue
-            rebuilt_rows.append(
-                (
-                    old_faiss_id,
-                    content,
-                    metadata_json,
-                    source_commit_id,
-                    int(version or 1),
-                    int(is_deleted or 0),
-                    intent_tag or "",
-                    emb,
-                )
+        for row in rows:
+            old_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag = row
+            reason = None
+            try:
+                raw_embedding = embedding_fn(content)
+                embedding = list(raw_embedding) if raw_embedding is not None else None
+            except Exception as exc:
+                embedding = None
+                reason = f"embedding_error: {exc}"
+            if not embedding:
+                reason = reason or "empty_embedding"
+            elif target_dim is None:
+                target_dim = len(embedding)
+            elif len(embedding) != target_dim:
+                reason = f"dimension_mismatch: expected {target_dim}, got {len(embedding)}"
+            if reason:
+                skipped_rows.append((row, reason))
+            else:
+                rebuilt_rows.append((row, embedding))
+
+        target_dim = target_dim or self.embedding_dim
+        try:
+            new_index = faiss.IndexFlatL2(target_dim)
+            started_batch = not self._in_batch
+            if started_batch:
+                self.begin_batch()
+        except Exception as exc:
+            self.cursor.execute(
+                """UPDATE vector_rebuild_runs
+                   SET status='FAILED', completed_at=CURRENT_TIMESTAMP, error_message=?
+                   WHERE run_id=?""",
+                (str(exc), run_id),
             )
-
-        if target_dim is None:
-            return {"rebuilt": 0, "skipped": skipped}
-
-        new_index = faiss.IndexFlatL2(target_dim)
-        
-        started_batch = False
-        if not self._in_batch:
-            self.begin_batch()
-            started_batch = True
-            
+            self.conn.commit()
+            raise
         try:
             self.cursor.execute("DELETE FROM vector_metadata")
-            for new_id, row in enumerate(rebuilt_rows):
-                _, content, metadata_json, source_commit_id, version, is_deleted, intent_tag, emb = row
-                emb_np = np.array([emb], dtype=np.float32)
-                new_index.add(emb_np)
+            for new_id, (row, embedding) in enumerate(rebuilt_rows):
+                old_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag = row
+                new_index.add(np.array([embedding], dtype=np.float32))
                 self.cursor.execute(
                     """INSERT INTO vector_metadata
                        (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (new_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag),
+                    (new_id, content, metadata_json, source_commit_id, int(version or 1), int(is_deleted or 0), intent_tag or ""),
                 )
-            # Preserve skipped rows as soft-deleted metadata for audit/retry visibility.
-            used_ids = {idx for idx, _ in enumerate(rebuilt_rows)}
+                self.cursor.execute(
+                    """INSERT INTO vector_rebuild_audit
+                       (run_id, old_faiss_id, new_faiss_id, content, status, reason, metadata)
+                       VALUES (?, ?, ?, ?, 'REBUILT', '', ?)""",
+                    (run_id, old_id, new_id, content, metadata_json),
+                )
+
             tombstone_id = -1
-            for _, content, metadata_json, source_commit_id, version, is_deleted, intent_tag in skipped_rows:
-                while tombstone_id in used_ids:
-                    tombstone_id -= 1
+            for row, reason in skipped_rows:
+                old_id, content, metadata_json, source_commit_id, version, _, intent_tag = row
                 self.cursor.execute(
                     """INSERT INTO vector_metadata
                        (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (tombstone_id, content, metadata_json, source_commit_id, version, 1, intent_tag),
+                       VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                    (tombstone_id, content, metadata_json, source_commit_id, int(version or 1), intent_tag or ""),
                 )
-                used_ids.add(tombstone_id)
+                self.cursor.execute(
+                    """INSERT INTO vector_rebuild_audit
+                       (run_id, old_faiss_id, new_faiss_id, content, status, reason, metadata)
+                       VALUES (?, ?, ?, ?, 'SKIPPED', ?, ?)""",
+                    (run_id, old_id, tombstone_id, content, reason, metadata_json),
+                )
                 tombstone_id -= 1
-                
-            if started_batch:
-                self.end_batch(success=True)
-                
+
             self.index = new_index
             self.embedding_dim = target_dim
             self.set_schema_meta("embedding_dim", str(target_dim))
-            if not self._in_batch:
-                self.save_faiss()
-            else:
-                self._mark_faiss_dirty()
-            return {"rebuilt": len(rebuilt_rows), "skipped": skipped}
-        except Exception:
+            self._faiss_dirty = True
+            self.cursor.execute(
+                """UPDATE vector_rebuild_runs
+                   SET status='COMPLETED', completed_at=CURRENT_TIMESTAMP,
+                       rebuilt_count=?, skipped_count=?, target_dim=?
+                   WHERE run_id=?""",
+                (len(rebuilt_rows), len(skipped_rows), target_dim, run_id),
+            )
             if started_batch:
+                self.end_batch(success=True)
+            self.faiss_load_error = None
+            return {
+                "rebuilt": len(rebuilt_rows),
+                "skipped": len(skipped_rows),
+                "run_id": run_id,
+            }
+        except Exception as exc:
+            if started_batch and self._in_batch:
                 self.end_batch(success=False)
-            if old_index_backup is not None:
-                self.index = old_index_backup
+            self.cursor.execute(
+                """UPDATE vector_rebuild_runs
+                   SET status='FAILED', completed_at=CURRENT_TIMESTAMP, error_message=?
+                   WHERE run_id=?""",
+                (str(exc), run_id),
+            )
+            self.conn.commit()
             raise
 
     def close(self):

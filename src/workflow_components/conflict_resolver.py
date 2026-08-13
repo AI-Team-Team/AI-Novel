@@ -5,6 +5,8 @@ import logging
 from typing import Dict, Optional, List
 
 import config
+from workflow_components.parsing import extract_att_member_answer
+from workflow_components.resources import get_ai_resource, get_message
 
 
 class ConflictResolverWorkflowMixin:
@@ -17,12 +19,12 @@ class ConflictResolverWorkflowMixin:
         """
         row = self.memory.get_conflict_by_id(conflict_id)
         if not row:
-            self.logger.error(f"Conflict #{conflict_id} not found in database.")
+            self.logger.error(get_message("runtime.conflict_not_found", conflict_id=conflict_id))
             return False
         
         status = row[8]
         if status != "PENDING":
-            self.logger.warning(f"Conflict #{conflict_id} is already in status '{status}'. Skipping.")
+            self.logger.warning(get_message("runtime.conflict_not_pending", conflict_id=conflict_id, status=status))
             return False
 
         entity_type = row[1]
@@ -39,8 +41,14 @@ class ConflictResolverWorkflowMixin:
         if rounds < 1:
             rounds = 1
 
-        self.logger.info(f"[AUTO] Conflict detected in Ch {chapter_num} scan: {conflict_type} ({entity_type} {entity_key}).")
-        self.logger.info("[AUTO] Spawning ATT Conflict Resolution Committee...")
+        self.logger.info(get_message(
+            "runtime.conflict_detected",
+            chapter_num=chapter_num,
+            conflict_type=conflict_type,
+            entity_type=entity_type,
+            entity_key=entity_key,
+        ))
+        self.logger.info(get_message("runtime.conflict_spawn"))
 
         # 1. Deep Context Window Construction
         context_markdown = self._assemble_deep_context(
@@ -56,55 +64,44 @@ class ConflictResolverWorkflowMixin:
         )
 
         # 2. Dynamic AT Spawning via ATT
-        preset = self.att_manager.get_preset("conflict_resolution")
-        team = self.att_manager.create_agent_team(
-            creator=self.att_manager.root_ai,
-            member_count=3,
-            roles_and_presets=preset["roles"],
-            preset_name="conflict_resolution",
-            system_instructions=preset["system_instructions"]
-        )
-        team.chapter_num = chapter_num
+        team = self._create_att_team("conflict_resolution", chapter_num)
 
-        prompt = (
-            f"Please resolve the narrative conflict detailed below:\n\n"
-            f"{context_markdown}\n\n"
-            f"Discuss the best approach. Historian_Critic should present continuity points, "
-            f"Prose_Scanner should present creative pros, and Consensus_Planner must arbitrate "
-            f"and make the final decision in JSON format choosing exactly 'keep_existing' or 'apply_incoming'."
-        )
+        prompt = get_ai_resource("prompt.att.conflict", context=context_markdown)
 
         # 3. Bounded Debate Loop
         try:
-            transcript_text = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
-            planner_decision = self._extract_json(transcript_text)
+            transcript_text = self._execute_att_discussion(team, prompt, rounds)
+            planner_answer = extract_att_member_answer(
+                transcript_text, team, "Consensus_Planner"
+            )
+            planner_decision = self._extract_json(planner_answer or "")
         except Exception as e:
-            self.logger.error(f"[AUTO] ATT debate failed: {e}")
+            self.logger.error(get_message("runtime.conflict_debate_failed", error=e))
             return False
 
         # 4. Consensus Gating & Mutative Commit
         if not planner_decision or "action" not in planner_decision:
-            self.logger.error("[AUTO] Committee failed to output a parseable JSON decision block.")
+            self.logger.error(get_message("runtime.conflict_decision_unparseable"))
             self._write_discussion_log(conflict_id, context_markdown, [transcript_text], "STANDOFF", None)
             return False
 
         action = str(planner_decision.get("action")).strip().lower()
-        reasoning = planner_decision.get("reasoning", "No detailed reasoning provided by Committee.")
+        reasoning = planner_decision.get("reasoning", get_ai_resource("runtime.committee_reason_missing"))
         compromise = planner_decision.get("narrative_compromise", "")
 
         if action not in {"keep_existing", "apply_incoming"}:
-            self.logger.error(f"[AUTO] Committee output invalid consensus action: '{action}'. Must be keep_existing or apply_incoming.")
+            self.logger.error(get_message("runtime.conflict_action_invalid", action=action))
             self._write_discussion_log(conflict_id, context_markdown, [transcript_text], "STANDOFF", planner_decision)
             return False
 
         # Consensus agreed! Apply the transaction atomically
-        resolver_note = (
-            f"resolved via ATT Conflict Resolution Committee.\n"
-            f"Committee Choice: {action}\n"
-            f"Reasoning: {reasoning}\n"
-            f"Narrative Compromise: {compromise}"
+        resolver_note = get_ai_resource(
+            "runtime.conflict_resolution_note",
+            action=action,
+            reasoning=reasoning,
+            compromise=compromise,
         )
-        self.logger.info(f"[AUTO] Resolution agreed: {action}. Committing mutations atomically...")
+        self.logger.info(get_message("runtime.conflict_commit", action=action))
 
         ok = self.memory.resolve_conflict(
             conflict_id=conflict_id,
@@ -117,7 +114,11 @@ class ConflictResolverWorkflowMixin:
             self._write_discussion_log(conflict_id, context_markdown, [transcript_text], "RESOLVED", planner_decision)
             return True
         else:
-            self.logger.error(f"[AUTO] Database transaction failed while applying action '{action}' for conflict #{conflict_id}.")
+            self.logger.error(get_message(
+                "runtime.conflict_transaction_failed",
+                action=action,
+                conflict_id=conflict_id,
+            ))
             self._write_discussion_log(conflict_id, context_markdown, [transcript_text], "TRANSACTION_FAILED", planner_decision)
             return False
 
@@ -134,7 +135,7 @@ class ConflictResolverWorkflowMixin:
         blocking_level: str
     ) -> str:
         # A. Preceding chapter prose
-        preceding_prose = "*No preceding chapter exists.*"
+        preceding_prose = get_ai_resource("context.no_preceding_chapter")
         if chapter_num > 1:
             preceding_path = self.get_chapter_path(chapter_num - 1)
             if os.path.exists(preceding_path):
@@ -142,92 +143,90 @@ class ConflictResolverWorkflowMixin:
                     preceding_prose = f.read().strip()
 
         # B. Conflict chapter prose
-        conflict_prose = "*Conflict chapter prose file is empty or not yet written.*"
+        conflict_prose = get_ai_resource("context.no_conflict_prose")
         conflict_path = self.get_chapter_path(chapter_num)
         if os.path.exists(conflict_path):
             with open(conflict_path, "r", encoding="utf-8") as f:
                 conflict_prose = f.read().strip()
 
         # C. Succeeding chapter prose
-        succeeding_prose = "*No succeeding chapter is available at this stage.*"
+        succeeding_prose = get_ai_resource("context.no_succeeding_chapter")
         succeeding_path = self.get_chapter_path(chapter_num + 1)
         if os.path.exists(succeeding_path):
             with open(succeeding_path, "r", encoding="utf-8") as f:
                 succeeding_prose = f.read().strip()
 
         # D. Character Profiles
-        character_profile = "*N/A*"
+        character_profile = get_ai_resource("context.not_applicable")
         if entity_type == "character":
             profile_row = self.memory.get_character(entity_key)
             if profile_row:
-                character_profile = (
-                    f"Name: {profile_row[1]}\n"
-                    f"Core Traits: {profile_row[2]}\n"
-                    f"Status: {profile_row[3]}\n"
-                    f"Attributes: {profile_row[4]}"
+                character_profile = get_ai_resource(
+                    "context.character_profile",
+                    name=profile_row[1],
+                    traits=profile_row[2],
+                    status=profile_row[3],
+                    attributes=profile_row[4],
                 )
             else:
-                character_profile = f"Character '{entity_key}' has no record in the database."
+                character_profile = get_ai_resource("context.character_missing", name=entity_key)
 
         # E. All Characters overview
         chars_overview_list = []
         all_chars = self.memory.get_all_characters()
         for char in all_chars:
-            chars_overview_list.append(f"- Name: {char[0]} | Core Traits: {char[1]} | Status: {char[2]}")
-        characters_overview = "\n".join(chars_overview_list) if chars_overview_list else "*No characters in database.*"
+            chars_overview_list.append(
+                get_ai_resource("context.character_item", name=char[0], traits=char[1], status=char[2])
+            )
+        characters_overview = "\n".join(chars_overview_list) if chars_overview_list else get_ai_resource("context.no_characters")
 
         # F. World Rules
         rules_list = []
         self.memory.cursor.execute("SELECT category, rule_content, strictness FROM world_rules WHERE is_deleted = 0")
         rules = self.memory.cursor.fetchall()
         for rule in rules:
-            rules_list.append(f"- Category: {rule[0]} | Rule: {rule[1]} | Strictness: {rule[2]}")
-        world_rules = "\n".join(rules_list) if rules_list else "*No global rules in database.*"
+            rules_list.append(
+                get_ai_resource("context.rule_item", category=rule[0], rule=rule[1], strictness=rule[2])
+            )
+        world_rules = "\n".join(rules_list) if rules_list else get_ai_resource("context.no_rules")
 
         # G. Timeline
         events_list = []
         events = self.memory.get_events(limit=10)
         for ev in events:
             events_list.append(
-                f"- Event: {ev[1]} | Description: {ev[2]} | Time: {ev[3]} | "
-                f"Impact: {ev[4]} | Entities: {ev[5]} | Location: {ev[6]}"
+                get_ai_resource(
+                    "context.event_item",
+                    event=ev[1],
+                    description=ev[2],
+                    time=ev[3],
+                    impact=ev[4],
+                    entities=ev[5],
+                    location=ev[6],
+                )
             )
-        timeline_events = "\n".join(events_list) if events_list else "*No timeline events recorded yet.*"
+        timeline_events = "\n".join(events_list) if events_list else get_ai_resource("context.no_events")
 
-        return (
-            f"# CONFLICT CONTEXT PACKAGE\n\n"
-            f"## 1. Conflict Details\n"
-            f"- **Conflict ID**: {conflict_id}\n"
-            f"- **Entity Type**: {entity_type}\n"
-            f"- **Entity Key**: {entity_key}\n"
-            f"- **Conflict Type**: {conflict_type}\n"
-            f"- **Source**: {source}\n"
-            f"- **Chapter**: {chapter_num}\n"
-            f"- **Blocking Level**: {blocking_level}\n\n"
-            f"### Incoming Scanned Fact:\n"
-            f"```json\n"
-            f"{incoming_json_str}\n"
-            f"```\n\n"
-            f"### Existing Database Fact:\n"
-            f"```json\n"
-            f"{existing_json_str}\n"
-            f"```\n\n"
-            f"## 2. Multi-Chapter Prose Window\n\n"
-            f"### Preceding Chapter (Chapter {chapter_num - 1} Prose):\n"
-            f"{preceding_prose}\n\n"
-            f"### Conflict Chapter (Chapter {chapter_num} Prose):\n"
-            f"{conflict_prose}\n\n"
-            f"### Succeeding Chapter (Chapter {chapter_num + 1} Prose):\n"
-            f"{succeeding_prose}\n\n"
-            f"## 3. Structured Database Context\n\n"
-            f"### Entity Character Profile:\n"
-            f"{character_profile}\n\n"
-            f"### All Active Characters:\n"
-            f"{characters_overview}\n\n"
-            f"### Global World Bible Rules:\n"
-            f"{world_rules}\n\n"
-            f"### Last 10 Timeline Events:\n"
-            f"{timeline_events}"
+        return get_ai_resource(
+            "prompt.conflict_context",
+            conflict_id=conflict_id,
+            entity_type=entity_type,
+            entity_key=entity_key,
+            conflict_type=conflict_type,
+            source=source,
+            chapter_num=chapter_num,
+            blocking_level=blocking_level,
+            incoming_json=incoming_json_str,
+            existing_json=existing_json_str,
+            preceding_chapter=chapter_num - 1,
+            preceding_prose=preceding_prose,
+            conflict_prose=conflict_prose,
+            succeeding_chapter=chapter_num + 1,
+            succeeding_prose=succeeding_prose,
+            character_profile=character_profile,
+            characters_overview=characters_overview,
+            world_rules=world_rules,
+            timeline_events=timeline_events,
         )
 
     def _write_discussion_log(
@@ -242,33 +241,31 @@ class ConflictResolverWorkflowMixin:
         os.makedirs(discussions_dir, exist_ok=True)
         log_path = os.path.join(discussions_dir, f"conflict_{conflict_id}_resolution_discussion.md")
 
-        title = f"# Multi-Agent Conflict Resolution Debate - Conflict #{conflict_id}"
-        meta = (
-            f"**Status**: {status}\n"
-            f"**Timestamp**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        title = get_message("log.conflict_title", conflict_id=conflict_id)
+        meta = get_message(
+            "log.conflict_meta",
+            status=status,
+            timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
         )
         if decision:
-            meta += (
-                f"**Consensus Action**: {decision.get('action')}\n\n"
-                f"### Planner Reasoning:\n"
-                f"{decision.get('reasoning')}\n\n"
-                f"### Narrative Compromise:\n"
-                f"{decision.get('narrative_compromise')}\n"
+            meta += get_message(
+                "log.conflict_decision",
+                action=decision.get('action'),
+                reasoning=decision.get('reasoning'),
+                compromise=decision.get('narrative_compromise'),
             )
 
         transcript_body = "\n".join(transcript)
 
-        full_doc = (
-            f"{title}\n\n"
-            f"## Metadata\n"
-            f"{meta}\n"
-            f"## Debate Transcript\n\n"
-            f"{transcript_body}\n\n"
-            f"## Context Details\n\n"
-            f"{context}\n"
+        full_doc = get_message(
+            "log.conflict_document",
+            title=title,
+            metadata=meta,
+            transcript=transcript_body,
+            context=context,
         )
 
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(full_doc)
 
-        self.logger.info(f"[AUTO] Discussion transcript saved to: {log_path}")
+        self.logger.info(get_message("runtime.conflict_log_saved", path=log_path))

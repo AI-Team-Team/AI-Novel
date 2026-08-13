@@ -14,6 +14,9 @@ if SRC_DIR not in sys.path:
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from workflow_components.bootstrap_messages import ConfigurationError
+import config
+
 class ConfigTests(unittest.TestCase):
     def test_disabled_model_error(self):
         config_content = """
@@ -63,12 +66,12 @@ disabled-model:
         try:
             # Apply mocks
             with patch("builtins.open", custom_open), patch("os.path.exists", custom_exists):
-                import config
-                with self.assertRaises(ValueError) as ctx:
+                with self.assertRaises(ConfigurationError) as ctx:
                     importlib.reload(config)
         finally:
             if "AI_NOVEL_FORCE_REAL_CONFIG" in os.environ:
                 del os.environ["AI_NOVEL_FORCE_REAL_CONFIG"]
+            importlib.reload(config)
                 
         self.assertIn("explicitly disabled", str(ctx.exception))
 

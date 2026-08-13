@@ -35,7 +35,7 @@ It validates file integrity by type:
 
 Binary stores (`.db`, `.faiss`) are not file-decoded by this layer; database integrity is checked through commit/state consistency for each chapter.
 
-* **Automatic FAISS Recovery**: During startup, if the FAISS index file is missing or corrupt but the SQLite database has active records in the `vector_metadata` table, the system automatically rebuilds the vector index from database metadata.
+* **Automatic FAISS Recovery**: During startup, reconciliation checks load errors, active SQLite metadata IDs, and FAISS count/IDs. Missing, corrupt, or mismatched indexes are rebuilt without deleting recovery metadata. Skipped rows remain auditable.
 
 ## Chapter Completion Contract
 
@@ -92,5 +92,6 @@ If a critical frame file is invalid, resume is blocked after discard and a runti
 
 * Prevents silent continuation from partial writes.
 * Keeps the database and filesystem artifacts aligned by commit-level checks.
+* Bulk replay can preview every failed payload before mutation and apply bounded per-commit retries with either continue or stop policy.
 * Keeps recovery deterministic at chapter granularity.
 * Avoids compounding corruption by blocking on invalid global planning frames.

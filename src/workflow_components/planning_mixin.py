@@ -4,42 +4,32 @@ from typing import Dict, Optional
 
 import config
 from llm_client import LLMClientError
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
+from workflow_components.parsing import extract_att_member_answer
 
 class PlanningWorkflowMixin:
     def _refine_chapter_guide_with_discussion(self, chapter_num: int, guide: str, prompts: Dict[str, str]) -> str:
         if not getattr(config, "ENABLE_AUTONOMY_SUITE", True):
-            self.logger.info(f"Autonomy suite disabled. Bypassing Chapter Planning Committee refinement for Ch {chapter_num}.")
+            self.logger.info(get_message("runtime.planning_bypassed", chapter_num=chapter_num))
             return guide
 
         rounds = max(0, config.CHAPTER_GUIDE_DISCUSSION_ROUNDS)
-        self.logger.info(f"Spawning Chapter Planning Committee to refine guide for Ch {chapter_num}...")
+        self.logger.info(get_message("runtime.spawn_planning", chapter_num=chapter_num))
         
-        preset = self.att_manager.get_preset("planning")
-        
-        team = self.att_manager.create_agent_team(
-            creator=self.att_manager.root_ai,
-            member_count=3,
-            roles_and_presets=preset["roles"],
-            preset_name="planning",
-            system_instructions=preset["system_instructions"]
-        )
-        team.chapter_num = chapter_num
+        if rounds < 1:
+            return guide
+        team = self._create_att_team("planning", chapter_num)
 
-        prompt = (
-            f"Please refine the initial chapter guide for Chapter {chapter_num}.\n\n"
-            f"Initial Chapter Guide:\n{guide}\n\n"
-            f"Continuity_Auditor must check for timeline coherence, "
-            f"Structural_Planner must optimize pacing and scene structures, "
-            f"and Reviewer_Arbitrator must integrate the refinements and produce the finalized guide."
+        prompt = get_ai_resource(
+            "prompt.att.planning", chapter_num=chapter_num, guide=guide
         )
 
         try:
-            transcript = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
-            if "final answer:" in transcript.lower():
-                final_guide = transcript.split("Final Answer:", 1)[1].strip()
-            else:
-                final_guide = guide
+            transcript = self._execute_att_discussion(team, prompt, rounds)
+            final_guide = (
+                extract_att_member_answer(transcript, team, "Reviewer_Arbitrator")
+                or guide
+            )
                 
             self._append_structured_discussion(
                 phase_type="guide",
@@ -54,17 +44,17 @@ class PlanningWorkflowMixin:
             )
             return final_guide
         except Exception as e:
-            self.logger.warning(f"Chapter Planning Committee execution failed, using initial guide: {e}")
+            self.logger.warning(get_message("runtime.planning_failed", error=e))
             return guide
 
     def generate_chapter_guide(self, chapter_num: int, previous_summary: str = None) -> str:
-        self.logger.info(f"Generating guide for Chapter {chapter_num}...")
+        self.logger.info(get_message("runtime.generate_guide", chapter_num=chapter_num))
         self._enforce_conflict_free_state(stage=f"chapter_{self._num3(chapter_num)}_planning")
         prompts = self._get_system_prompts()
 
         world_bible_path = self._latest_world_bible_path()
         if not os.path.exists(world_bible_path):
-            raise RuntimeError("World Bible not found. Run --init first.")
+            raise RuntimeError(get_message("runtime.world_missing"))
 
         with open(world_bible_path, "r", encoding="utf-8") as f:
             world_bible = f.read()
@@ -80,45 +70,50 @@ class PlanningWorkflowMixin:
             user_request=f"chapter_{self._num3(chapter_num)}_guide",
         )
         db_chars = context_pkg["characters"]  # type: ignore[assignment]
-        char_summary = get_resource("ui.char_summary_header")
+        char_summary = get_ai_resource("ui.char_summary_header")
         if db_chars:
             for c in db_chars:
-                char_summary += "- " + c[0] + get_resource("ui.status_label", status=c[2]) + "\n"
+                char_summary += "- " + c[0] + get_ai_resource("ui.status_label", status=c[2]) + "\n"
         else:
-            char_summary += get_resource("ui.no_records")
+            char_summary += get_ai_resource("ui.no_records")
 
         db_rules = context_pkg["rules"]  # type: ignore[assignment]
-        rule_summary = get_resource("ui.rule_summary_header")
+        rule_summary = get_ai_resource("ui.rule_summary_header")
         if db_rules:
             for r in db_rules:
-                rule_summary += get_resource("ui.rule_item", category=r[0], content=r[1], strictness=r[2])
+                rule_summary += get_ai_resource("ui.rule_item", category=r[0], content=r[1], strictness=r[2])
         else:
-            rule_summary += get_resource("ui.rule_no_records")
+            rule_summary += get_ai_resource("ui.rule_no_records")
 
         db_events = context_pkg["events"]  # type: ignore[assignment]
-        event_summary = get_resource("ui.event_summary_header")
+        event_summary = get_ai_resource("ui.event_summary_header")
         if db_events:
             for e in db_events:
-                event_summary += get_resource("ui.event_item", timestamp=e[3], name=e[1], description=e[2], location=e[6])
+                event_summary += get_ai_resource("ui.event_item", timestamp=e[3], name=e[1], description=e[2], location=e[6])
         else:
-            event_summary += get_resource("ui.event_no_records")
+            event_summary += get_ai_resource("ui.event_no_records")
         pending_conflicts = context_pkg["conflicts"]  # type: ignore[assignment]
-        conflict_summary = get_resource("ui.conflict_summary_header")
+        conflict_summary = get_ai_resource("ui.conflict_summary_header")
         if pending_conflicts:
             for conflict in pending_conflicts:
-                conflict_summary += (
-                    f"- #{conflict[0]} [{conflict[3]}] {conflict[1]}:{conflict[2]} (chapter={conflict[5]})\n"
+                conflict_summary += get_ai_resource(
+                    "ui.conflict_item",
+                    conflict_id=conflict[0],
+                    conflict_type=conflict[3],
+                    entity_type=conflict[1],
+                    entity_key=conflict[2],
+                    chapter_num=conflict[5],
                 )
         else:
-            conflict_summary += get_resource("ui.none")
+            conflict_summary += get_ai_resource("ui.none")
         semantic_summary = str(context_pkg["semantic_summary"])
         retrieval_intent = context_pkg["intent"]  # type: ignore[assignment]
 
-        context_prefix = get_resource("label.world_background")
-        plot_prefix = get_resource("label.plot_outline")
-        detailed_plot_prefix = get_resource("label.detailed_plot_outline")
-        prev_summary_prefix = get_resource("label.prev_summary_prefix")
-        task_instruction = get_resource("prompt.planner_task", chapter_num=chapter_num)
+        context_prefix = get_ai_resource("label.world_background")
+        plot_prefix = get_ai_resource("label.plot_outline")
+        detailed_plot_prefix = get_ai_resource("label.detailed_plot_outline")
+        prev_summary_prefix = get_ai_resource("label.prev_summary_prefix")
+        task_instruction = get_ai_resource("prompt.planner_task", chapter_num=chapter_num)
         task_instruction += f"\n{self._language_rule()}"
 
         full_prompt = f"{context_prefix}\n{world_bible}\n\n"
@@ -126,12 +121,12 @@ class PlanningWorkflowMixin:
             full_prompt += f"{plot_prefix}\n{plot_outline}\n\n"
         if detailed_plot_outline:
             full_prompt += f"{detailed_plot_prefix}\n{detailed_plot_outline}\n\n"
-        state_header = get_resource("ui.state_header")
-        state_footer = get_resource("ui.state_footer")
+        state_header = get_ai_resource("ui.state_header")
+        state_footer = get_ai_resource("ui.state_footer")
         full_prompt += f"{state_header}\n{char_summary}\n{rule_summary}\n{event_summary}\n{state_footer}\n\n"
         full_prompt += conflict_summary + "\n"
         full_prompt += (
-            get_resource("label.retrieval_policy", task_type=retrieval_intent.get('task_type'), mode=retrieval_intent.get('mode'), tiers=retrieval_intent.get('required_tiers'))
+            get_ai_resource("label.retrieval_policy", task_type=retrieval_intent.get('task_type'), mode=retrieval_intent.get('mode'), tiers=retrieval_intent.get('required_tiers'))
         )
         full_prompt += semantic_summary + "\n"
         if previous_summary:
@@ -139,8 +134,8 @@ class PlanningWorkflowMixin:
         full_prompt += task_instruction
 
         if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
-            self.att_manager.dashboard.active_stage = f"Planning Chapter {chapter_num}"
-            self.att_manager.dashboard.add_activity("Planner", "Thought", f"Generating draft Chapter Guide based on history, rules & memory...")
+            self.att_manager.dashboard.active_stage = get_message("dashboard.planning", chapter_num=chapter_num)
+            self.att_manager.dashboard.add_activity("Planner", "Thought", get_message("dashboard.planning_detail"))
             self.att_manager.dashboard.refresh()
 
         try:
@@ -152,7 +147,7 @@ class PlanningWorkflowMixin:
         )
         self._log_llm_interaction(
             role="Planner",
-            phase=f"Chapter {self._num3(chapter_num)} Planning",
+            phase=get_message("phase.chapter_planning", chapter=self._num3(chapter_num)),
             prompt=full_prompt,
             response=guide,
             system_instruction=prompts["planner"],

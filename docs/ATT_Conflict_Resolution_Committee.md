@@ -10,6 +10,8 @@ When a blocking conflict is encountered during chapter scanning (such as charact
 2. **Prose_Scanner**: The champion of creative directions. Defends the writer's creative prose choices, narrative pacing, and newly scanned character statuses or details (advocates for `apply_incoming`).
 3. **Consensus_Planner**: The moderator and arbitrator of the committee. Facilitates discussion over multiple rounds and is responsible for making the final executive resolution in the last round.
 
+AI-Novel accepts only the last member-prefixed answer from `Consensus_Planner`. JSON or `Final Answer:` text emitted by the other members cannot be mistaken for the executive decision.
+
 ## 2. Deep Context Assembly (Multi-Chapter Window)
 
 To enable highly coherent decision-making, the dynamic committee is supplied with a comprehensive, context package assembled by the State Manager:
@@ -122,12 +124,12 @@ workflow:
    Pass this flag with planning, writing, or continuous tasks to automatically resolve blocking conflicts using AI debate:
 
    ```bash
-   python src/main.py --write 3 --ai-resolve-conflicts
+   ./venv/bin/python src/main.py --write 3 --ai-resolve-conflicts
    ```
 
 3. **Manual Override Fallback**:
    If the loop is not continuous, the workflow will block on the conflict until manually resolved via:
 
    ```bash
-   python src/main.py --resolve-conflict <CONFLICT_ID> <keep_existing|apply_incoming>
+   ./venv/bin/python src/main.py --resolve-conflict <CONFLICT_ID> <keep_existing|apply_incoming>
    ```

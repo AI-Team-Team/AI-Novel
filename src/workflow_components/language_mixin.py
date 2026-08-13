@@ -5,7 +5,7 @@ from llm_client import LLMClient
 from workflow_components.parsing import contains_cjk, language_confidence
 
 
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
 
 
 class WorkflowLanguageMixin:
@@ -13,7 +13,7 @@ class WorkflowLanguageMixin:
         return config.LANGUAGE
 
     def _language_rule(self) -> str:
-        return get_resource("prompt.language_rule")
+        return get_ai_resource("prompt.language_rule")
 
     @staticmethod
     def _contains_cjk(text: str) -> bool:
@@ -55,41 +55,35 @@ class WorkflowLanguageMixin:
                 return current_text
             known_names = self._get_known_character_names()
             confidence = language_confidence(current_text, exclude_names=known_names)
-            self.logger.warning(
-                "Language guard triggered for %s (zh=%.3f, en=%.3f, after name exclusion, attempt %d/%d)",
-                role,
-                confidence["chinese"],
-                confidence["english"],
-                attempt + 1,
-                max_attempts,
-            )
+            self.logger.warning(get_message(
+                "runtime.language_guard_triggered",
+                role=role,
+                chinese=confidence["chinese"],
+                english=confidence["english"],
+                attempt=attempt + 1,
+                max_attempts=max_attempts,
+            ))
             if attempt == 0:
-                rewrite_prompt = (
-                    f"Rewrite the following content in {self._language_name()} only.\n"
-                    "Keep all details and structure. Output only the rewritten content.\n\n"
-                    "--- CONTENT BEGIN ---\n"
-                    f"{current_text}\n"
-                    "--- CONTENT END ---"
+                rewrite_prompt = get_ai_resource(
+                    "prompt.language_rewrite",
+                    language=self._language_name(),
+                    content=current_text,
                 )
             else:
-                rewrite_prompt = (
-                    f"CRITICAL: The previous rewrite attempt still failed our language guard check.\n"
-                    f"You MUST rewrite the content ENTIRELY and strictly in {self._language_name()} only.\n"
-                    "Do NOT include any foreign words or mixed language characters (except character names).\n"
-                    "Keep all details and structure. Output only the rewritten content.\n\n"
-                    "--- CONTENT BEGIN ---\n"
-                    f"{current_text}\n"
-                    "--- CONTENT END ---"
+                rewrite_prompt = get_ai_resource(
+                    "prompt.language_rewrite_strict",
+                    language=self._language_name(),
+                    content=current_text,
                 )
             try:
                 current_text = client.generate(prompt=rewrite_prompt, system_instruction=system_instruction)
             except Exception as e:
-                self.logger.error(f"Language rewrite failed during generation: {e}")
+                self.logger.error(get_message("runtime.language_rewrite_failed", error=e))
                 if attempt == max_attempts - 1:
                     raise
             self._log_llm_interaction(
                 role=role,
-                phase=f"Language Rewrite Attempt {attempt + 1}",
+                phase=get_message("runtime.language_rewrite_phase", attempt=attempt + 1),
                 prompt=rewrite_prompt,
                 response=current_text,
                 system_instruction=system_instruction,
@@ -97,8 +91,10 @@ class WorkflowLanguageMixin:
                 world_building=world_building,
             )
         if not self._is_expected_language(current_text):
-            raise RuntimeError(
-                f"Language Guard Error: Failed to rewrite content in {self._language_name()} "
-                f"after {max_attempts} attempts for role '{role}'."
-            )
+            raise RuntimeError(get_message(
+                "runtime.language_guard_error",
+                language=self._language_name(),
+                attempts=max_attempts,
+                role=role,
+            ))
         return current_text

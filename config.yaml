@@ -24,8 +24,9 @@ project:
   # Language: matches folder name in i18n/ (e.g., en, zh-CN)
   language: "en"
   # Language guard confidence thresholds:
-  min_confidence: 0.80
-  max_other_confidence: 0.10
+  min_confidence: 0.70
+  # Chinese prose commonly contains Latin names and technical tokens; allow up to 0.30.
+  max_other_confidence: 0.30
 
 # ==========================================
 # Retrieval / Constraint Controls
@@ -54,15 +55,42 @@ workflow:
   blocking_conflict_mode: "manual_block"
 
 # ==========================================
+# Database Management Committee Auditing
+# ==========================================
+database_audit:
+  enabled: true
+  # Applied when the DMC cannot produce a valid decision: "deny" or "allow".
+  failure_policy: "deny"
+  # Optional per-scope overrides. Omitted scopes inherit failure_policy.
+  failure_policies: {}
+  # Each scope can be enabled independently. Batch scopes are recommended for
+  # normal operation; row scopes provide stricter but more expensive auditing.
+  scopes:
+    att_sql: true
+    chapter_fact_batches: true
+    commit_replay: true
+    conflict_resolution: true
+    conflict_queue_writes: false
+    character_writes: false
+    relationship_writes: false
+    world_rule_writes: false
+    timeline_event_writes: false
+    vector_writes: false
+    revision_writes: false
+    chapter_commit_metadata: false
+    schema_metadata: false
+    maintenance: false
+
+# ==========================================
 # Experimental AI Autonomy & Delegation
 # ==========================================
 autonomy:
-  enable_autonomy_suite: True           # Master toggle to enable/disable entire autonomy suite
+  state_db_path: "novel/process/att_state_v6.db" # Current ATT persistence schema state
+  enable_autonomy_suite: True           # Narrative teams/delegation/tools; DMC may still use ATT core
   enable_autonomous_queries: True       # Global toggle for tool use loops
   enable_dynamic_delegation: True       # Global toggle for spawning subagents
   max_delegation_depth: 2               # Depth 0 (root) -> Depth 1 (child) -> Depth 2 (grandchild)
   min_subagent_team_size: 3             # Minimum sibling team size required to spawn
-  max_subagent_team_size: 5             # Max sibling team size
   subagent_discussion_rounds: 2         # Discussion rounds inside subagent panels
   react_max_steps: 5                    # Max reasoning loop steps for an agent turn
   inbox_summarize_threshold_chars: 1500 # Threshold to compress cascading inbox alerts
@@ -77,4 +105,3 @@ autonomy:
   emergency_discussion_rounds: 1        # Rounds of debate for emergency wake-ups
   tool_calling_mode: "auto"             # Tool strategy: "text_react", "native", or "auto"
   max_tool_rounds: 5                    # Max reasoning loop steps for native parallel execution
-  strict_state_persistence: True        # ORM cascading deletions for unreferenced state

@@ -78,6 +78,10 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
   * Returns one commit row with payload/status/replay metadata.
 * `get_failed_chapter_commits(limit: int = 20)`
   * Lists failed commit batches for replay triage.
+* `reconcile_vector_store() -> Dict[str, object]`
+  * Reports index load errors, active metadata count, FAISS count, ID alignment, and whether rebuild is required.
+* `_reset_vector_store(new_dim: int, preserve_metadata: bool = True, reason: str = "manual_reset") -> Dict[str, int]`
+  * Performs a transaction-coordinated vector reset; source metadata can be retained as tombstones.
 * `queue_conflict(...) -> int`
   * Pushes unresolved contradictions to `conflict_queue`.
   * Supports severity and triage metadata via `blocking_level`, `priority`, and `suggested_action`.
@@ -117,6 +121,7 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
   * Retrieves the top `k` most similar text chunks.
 * `rebuild_vector_index_from_metadata(embedding_fn, include_deleted: bool = False) -> Dict[str, int]`
   * Deterministically rebuilds FAISS from `vector_metadata` rows and remaps `faiss_id`.
+  * Returns a `run_id`; `vector_rebuild_runs` and `vector_rebuild_audit` retain completion and skipped-row reasons.
 
 ## `src.workflow`
 
@@ -131,8 +136,20 @@ Orchestrates the multi-agent process.
   * Writes markdown entries with consistent title/fields and appends JSON lines to `discussion_index.jsonl`.
 
 * `load_system_prompts(language: str, src_dir: str) -> Dict[str, str]`
-  * Loads core agent prompts from the `i18n/` system using `LanguageResources`.
+  * Loads core agent prompts from the AI-only `i18n/AI/` namespace using `LanguageResources`.
   * Returns a dictionary of prompts for `architect`, `critic`, `planner`, `writer`, and `scanner`.
+
+* `get_ai_resource(key, **kwargs) -> str`
+  * Resolves only model-visible resources from `i18n/AI/{language}/`.
+* `get_message(key, **kwargs) -> str`
+  * Resolves only human-visible resources from `i18n/messages/{language}/`.
+  * Cross-namespace lookup is intentionally rejected through a missing-resource marker.
+* `load_project_language(project_root, default="en") -> str`
+  * Reads only `project.language` for lightweight CLI localization; it does not validate models.
+* `get_bootstrap_message(project_root, locale, key, **kwargs) -> str`
+  * Resolves human startup/CLI text before `config` and `LanguageResources` are available.
+* `ConfigurationError`
+  * Marks user-correctable runtime configuration failures so the CLI can print a localized message and exit with code `2` without a traceback.
 
 * `start_new_project(user_instruction: str)`
   * **Phase 1:** Invokes the **Architect** agent.
@@ -187,6 +204,10 @@ Orchestrates the multi-agent process.
   * Lists failed commit batches.
 * `replay_chapter_commit(commit_id: str) -> bool`
   * Replays one failed commit from `chapter_commits.payload_json`.
+* `preview_failed_chapter_commits(limit: int = 50) -> List[Dict]`
+  * Decodes and schema-validates failed payloads without mutation.
+* `bulk_replay_failed_commits(limit=50, dry_run=False, max_attempts=3, retry_policy="continue") -> Dict`
+  * Replays eligible failed commits with bounded retries and a per-commit report.
 * `_critic_review_extracted_facts(chapter_num: int, facts_data: Dict, chapter_text: str, prompts: Dict) -> Dict`
   * LLM Critic batch reviews all extracted facts against current DB state before commit.
   * Builds a state snapshot (characters, strict rules, recent events) and sends to Critic with the facts payload.
@@ -274,5 +295,7 @@ Audits SQL queries for transactions.
 * **Methods**:
   * `audit_query(sql_command: str) -> Tuple[bool, str]`
     Validates SQLite queries against safety and integrity guidelines.
-  * `audit_batch_transaction(data: Dict[str, Any], chapter_num: Optional[int]) -> Tuple[bool, str]`
+  * `audit_operation(scope, operation, payload, chapter_num=None) -> Tuple[bool, str]`
+  * `audit_batch_transaction(data, chapter_num, scope="chapter_fact_batches", operation="chapter_fact_batch") -> Tuple[bool, str]`
+  * `should_audit(scope: str) -> bool`
     Audits complete batch updates before DB serialization. (Note: Currently defined in the class but not invoked by the pipeline).

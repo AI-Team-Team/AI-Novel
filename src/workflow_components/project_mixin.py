@@ -5,7 +5,8 @@ from typing import Dict
 
 import config
 from llm_client import LLMClientError
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
+from workflow_components.parsing import extract_att_member_answer
 
 class ProjectWorkflowMixin:
     def _generate_outline_with_discussion(
@@ -18,7 +19,7 @@ class ProjectWorkflowMixin:
         prompts: Dict[str, str],
     ) -> str:
         if not getattr(config, "ENABLE_AUTONOMY_SUITE", True):
-            self.logger.info(f"Autonomy suite disabled. Bypassing Plot Outline Committee for phase: {phase_name}.")
+            self.logger.info(get_message("runtime.autonomy_bypass_plot", phase=phase_name))
             try:
                 planner_prompt = prompts.get("planner", "")
                 outline = self.planner_client.generate(prompt=draft_prompt, system_instruction=planner_prompt)
@@ -28,33 +29,31 @@ class ProjectWorkflowMixin:
             except Exception as err:
                 raise RuntimeError(str(err)) from err
 
-        self.logger.info(f"Spawning Plot Outline Committee for phase: {phase_name}...")
+        self.logger.info(get_message("runtime.spawn_plot", phase=phase_name))
         
-        preset = self.att_manager.get_preset("plot_outline")
-        
-        team = self.att_manager.create_agent_team(
-            creator=self.att_manager.root_ai,
-            member_count=3,
-            roles_and_presets=preset["roles"],
-            preset_name="plot_outline",
-            system_instructions=preset["system_instructions"]
-        )
-        team.chapter_num = 0
+        if rounds < 1:
+            outline = self.planner_client.generate(
+                prompt=draft_prompt, system_instruction=prompts["planner"]
+            )
+            return self._enforce_output_language(
+                self.planner_client,
+                "Planner",
+                outline,
+                prompts["planner"],
+                world_building=True,
+            )
+        team = self._create_att_team("plot_outline", 0)
 
-        prompt = (
-            f"Please generate the outline for '{phase_name}'.\n\n"
-            f"Initial Context and Prompt:\n{draft_prompt}\n\n"
-            f"Narrative_Arc_Planner must design progression and character paths, "
-            f"Continuity_Critic must ensure cause-and-effect integrity, "
-            f"and Arc_Arbitrator must output the final polished outline block (specifying 'Final Answer: <outline content>')."
+        prompt = get_ai_resource(
+            "prompt.att.plot", phase_name=phase_name, draft_prompt=draft_prompt
         )
 
         try:
-            transcript = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
-            if "final answer:" in transcript.lower():
-                final_outline = transcript.split("Final Answer:", 1)[1].strip()
-            else:
-                final_outline = transcript
+            transcript = self._execute_att_discussion(team, prompt, rounds)
+            final_outline = (
+                extract_att_member_answer(transcript, team, "Arc_Arbitrator")
+                or transcript
+            )
                 
             outline_path = self._save_file(output_filename, final_outline, self.plot_dir)
             self._append_structured_discussion(
@@ -69,7 +68,7 @@ class ProjectWorkflowMixin:
             )
             return final_outline
         except Exception as e:
-            self.logger.warning(f"Plot Outline Committee execution failed, using direct generation: {e}")
+            self.logger.warning(get_message("runtime.plot_failed", error=e))
             try:
                 outline = self.planner_client.generate(prompt=draft_prompt, system_instruction=prompts["planner"])
                 return self._enforce_output_language(self.planner_client, "Planner", outline, prompts["planner"], world_building=True)
@@ -77,16 +76,16 @@ class ProjectWorkflowMixin:
                 raise RuntimeError(str(err)) from err
 
     def start_new_project(self, user_instruction: str) -> str:
-        self.logger.info(f"Starting new project ({config.LANGUAGE}) with instruction: {user_instruction}")
+        self.logger.info(get_message("runtime.start_project", language=config.LANGUAGE))
         prompts = self._get_system_prompts()
 
-        user_prompt_prefix = get_resource("label.user_request_prefix")
-        task_instruction = get_resource("prompt.architect_task")
+        user_prompt_prefix = get_ai_resource("label.user_request_prefix")
+        task_instruction = get_ai_resource("prompt.architect_task")
         architect_prompt = f"{user_prompt_prefix} {user_instruction}\n\n{task_instruction}\n\n{self._language_rule()}"
 
         if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
-            self.att_manager.dashboard.active_stage = "World Building"
-            self.att_manager.dashboard.add_activity("Architect", "Thought", "Drafting World Bible structure based on overview instructions...")
+            self.att_manager.dashboard.active_stage = get_message("dashboard.world_building")
+            self.att_manager.dashboard.add_activity("Architect", "Thought", get_message("dashboard.world_draft"))
             self.att_manager.dashboard.refresh()
 
         try:
@@ -101,7 +100,7 @@ class ProjectWorkflowMixin:
         )
         self._log_llm_interaction(
             role="Architect",
-            phase="World Building Draft",
+            phase=get_message("phase.world_draft"),
             prompt=architect_prompt,
             response=world_bible,
             system_instruction=prompts["architect"],
@@ -122,34 +121,23 @@ class ProjectWorkflowMixin:
 
         if getattr(config, "ENABLE_AUTONOMY_SUITE", True):
             rounds = max(0, config.WORLD_DISCUSSION_ROUNDS)
-            self.logger.info("Spawning World Bible Committee to refine World Bible...")
+            self.logger.info(get_message("runtime.spawn_world"))
             
-            preset = self.att_manager.get_preset("world_bible")
-            
-            team = self.att_manager.create_agent_team(
-                creator=self.att_manager.root_ai,
-                member_count=3,
-                roles_and_presets=preset["roles"],
-                preset_name="world_bible",
-                system_instructions=preset["system_instructions"]
-            )
-            team.chapter_num = 0
+            team = self._create_att_team("world_bible", 0) if rounds > 0 else None
 
-            prompt = (
-                f"Please refine the initial World Bible based on the user instruction.\n\n"
-                f"User Request:\n{user_instruction}\n\n"
-                f"Initial World Bible Draft:\n{world_bible}\n\n"
-                f"Lore_Architect must check lore rules and constraints, "
-                f"Narrative_Critic must check for logic gaps or bottlenecks, "
-                f"and World_Arbitrator must integrate the refinements and write the final polished World Bible (specifying 'Final Answer: <world bible content>')."
+            prompt = get_ai_resource(
+                "prompt.att.world",
+                user_instruction=user_instruction,
+                world_bible=world_bible,
             )
 
             try:
-                transcript = self.att_manager.execute_team_discussion_sync(team, prompt, rounds=rounds)
-                if "final answer:" in transcript.lower():
-                    world_bible = transcript.split("Final Answer:", 1)[1].strip()
-                else:
-                    world_bible = world_bible
+                if team is not None:
+                    transcript = self._execute_att_discussion(team, prompt, rounds)
+                    world_bible = (
+                        extract_att_member_answer(transcript, team, "World_Arbitrator")
+                        or world_bible
+                    )
                     
                 bible_path = self._save_file("world_bible.md", world_bible, self.world_dir)
                 self._append_structured_discussion(
@@ -163,17 +151,17 @@ class ProjectWorkflowMixin:
                     artifact_paths=[bible_path],
                 )
             except Exception as e:
-                self.logger.warning(f"World Bible Committee execution failed, using initial draft: {e}")
+                self.logger.warning(get_message("runtime.world_failed", error=e))
         else:
-            self.logger.info("Autonomy suite disabled. Bypassing World Bible Committee refinement.")
+            self.logger.info(get_message("runtime.world_bypassed"))
 
-        plot_draft_prompt = get_resource("prompt.plot_outline_draft", world_bible=world_bible)
+        plot_draft_prompt = get_ai_resource("prompt.plot_outline_draft", world_bible=world_bible)
         plot_draft_prompt += f"\n\n{self._language_rule()}"
         self._generate_outline_with_discussion(
-            phase_name=get_resource("label.plot_outline").strip("："),
+            phase_name=get_ai_resource("label.plot_outline").strip("："),
             draft_prompt=plot_draft_prompt,
             revise_prompt_builder=(
-                lambda current, critique: get_resource("prompt.plot_outline_revise", current=current, critique=critique)
+                lambda current, critique: get_ai_resource("prompt.plot_outline_revise", current=current, critique=critique)
             ),
             rounds=config.PLOT_DISCUSSION_ROUNDS,
             output_filename="plot_outline.md",
@@ -181,13 +169,13 @@ class ProjectWorkflowMixin:
         )
         plot_outline = self._read_text_if_exists(self._plot_outline_path())
 
-        detailed_plot_draft_prompt = get_resource("prompt.detailed_plot_outline_draft", world_bible=world_bible, plot_outline=plot_outline)
+        detailed_plot_draft_prompt = get_ai_resource("prompt.detailed_plot_outline_draft", world_bible=world_bible, plot_outline=plot_outline)
         detailed_plot_draft_prompt += f"\n\n{self._language_rule()}"
         self._generate_outline_with_discussion(
-            phase_name=get_resource("label.detailed_plot_outline").strip("："),
+            phase_name=get_ai_resource("label.detailed_plot_outline").strip("："),
             draft_prompt=detailed_plot_draft_prompt,
             revise_prompt_builder=(
-                lambda current, critique: get_resource("prompt.detailed_plot_outline_revise", current=current, critique=critique)
+                lambda current, critique: get_ai_resource("prompt.detailed_plot_outline_revise", current=current, critique=critique)
             ),
             rounds=config.DETAILED_PLOT_DISCUSSION_ROUNDS,
             output_filename="detailed_plot_outline.md",
@@ -195,8 +183,8 @@ class ProjectWorkflowMixin:
         )
 
         # Seed memory with initial structured facts extracted from the approved world bible.
-        scan_prefix = get_resource("label.world_background")
-        scan_task = get_resource("prompt.scanner_seed_task")
+        scan_prefix = get_ai_resource("label.world_background")
+        scan_task = get_ai_resource("prompt.scanner_seed_task")
         scan_task += f" {self._language_rule()}"
         try:
             raw_seed = self.scanner_client.generate(
@@ -205,7 +193,7 @@ class ProjectWorkflowMixin:
             )
             self._log_llm_interaction(
                 role="Scanner",
-                phase="World Building Seed Extraction",
+                phase=get_message("phase.world_seed"),
                 prompt=f"{scan_prefix}\n{world_bible}\n\n{scan_task}",
                 response=raw_seed,
                 system_instruction=prompts["scanner"],
@@ -215,13 +203,19 @@ class ProjectWorkflowMixin:
             if seed_data:
                 seed_errors = self._validate_fact_payload(seed_data)
                 if seed_errors:
-                    self.logger.warning("Initial seed payload validation failed; skip DB seed.")
+                    self.logger.warning(get_message("runtime.seed_invalid"))
                     self._save_file(
                         "world_init_facts_invalid.json",
                         json.dumps({"errors": seed_errors, "payload": seed_data}, indent=2, ensure_ascii=False),
                         self.facts_dir,
                     )
                     return bible_path
+                self._audit_database_batch(
+                    "chapter_fact_batches",
+                    "world_seed_fact_batch",
+                    seed_data,
+                    0,
+                )
                 self.memory.begin_batch()
                 try:
                     self._apply_fact_payload(
@@ -242,6 +236,6 @@ class ProjectWorkflowMixin:
                 )
                 self._sync_compact_archives()
         except LLMClientError as e:
-            self.logger.warning(f"Initial fact seeding skipped due to scanner error: {e}")
+            self.logger.warning(get_message("runtime.seed_failed", error=e))
 
         return bible_path

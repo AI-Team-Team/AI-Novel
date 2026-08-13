@@ -32,7 +32,7 @@ Decouple model registration and agent role assignment using two configuration fi
 
 In `config.yaml`, roles must be assigned to registered keys in a `models` block.
 
-*Note: All role assignments must be provided and non-empty; otherwise, the system will raise an error and exit immediately on startup. Similarly, assigning a role to a model key that has been disabled in `config/ai_model_config.yaml` will trigger a validation error on startup.*
+*Note: Commands that execute the workflow require every role assignment to be present and enabled. Invalid assignments produce a localized configuration message and exit code `2`, without a Python traceback. Informational commands such as `--help` use the lightweight localization bootstrap and do not load or validate the model registry.*
 
 ### Registering Models
 
@@ -53,6 +53,7 @@ ai:
 * **Model Name Fallback**: If `model_name` is empty or omitted, it defaults to the registration key name.
 * **Workflow Parameters**: Customize paths, `WORLD_DISCUSSION_ROUNDS`, or `CHAPTER_REVISION_ROUNDS` under `config.yaml` to control how much the agents iterate.
 * **Auto Mode**: Adjust `AUTO_GENERATION_MAX_RETRIES` (default: 3) to control chapter retry boundaries during `--auto` loop execution.
+* **Language Guard**: `project.min_confidence` and `project.max_other_confidence` control the deterministic language check. Chinese mode defaults to `0.70` required Chinese confidence and permits up to `0.30` English confidence; English mode defaults to `0.60` and `0.10` respectively.
 
 ## 3. Getting Started
 
@@ -61,7 +62,7 @@ ai:
 Run the initialization command to create the data structure and a template for your story:
 
 ```bash
-python src/main.py --init
+./venv/bin/python src/main.py --init
 ```
 
 This creates `novel/Novel_Overview.md`.
@@ -75,7 +76,7 @@ Edit `novel/Novel_Overview.md`. Describe your world, characters, and major plot 
 Run the start command to invoke the Architect and Planner:
 
 ```bash
-python src/main.py --start
+./venv/bin/python src/main.py --start
 ```
 
 The system will:
@@ -93,7 +94,7 @@ Generate multiple chapters in a row:
 
 ```bash
 # Generate 5 chapters starting from Chapter 1
-python src/main.py --auto 1 5
+./venv/bin/python src/main.py --auto 1 5
 ```
 
 The system will automatically Plan, Write, Review, and Scan each chapter. If interrupted, simply run the command again; it will validate existing artifacts and resume where it left off.
@@ -102,9 +103,9 @@ The system will automatically Plan, Write, Review, and Scan each chapter. If int
 
 If you want fine-grained control, you can run steps individually:
 
-1. **Plan**: `python src/main.py --plan 1` (Creates the "Writing Contract").
-2. **Write & Review**: `python src/main.py --write 1` (Generates prose and runs the Critic review).
-3. **Scan**: `python src/main.py --scan 1` (Updates the memory database with new facts from the prose).
+1. **Plan**: `./venv/bin/python src/main.py --plan 1` (Creates the "Writing Contract").
+2. **Write & Review**: `./venv/bin/python src/main.py --write 1` (Generates prose and runs the Critic review).
+3. **Scan**: `./venv/bin/python src/main.py --scan 1` (Updates the memory database with new facts from the prose).
 
 ## 5. Advanced Management
 
@@ -126,11 +127,11 @@ When the Scanner detects a semantic change in the story's state (e.g., a charact
    * `manual_block`: Halts continuous loops, forcing manual resolution.
 
 3. **Manual Override Triage**:
-   * **List Conflicts**: `python src/main.py --conflicts-triage`
+   * **List Conflicts**: `./venv/bin/python src/main.py --conflicts-triage`
    * **Resolve a Conflict**:
 
      ```bash
-     python src/main.py --resolve-conflict <ID> <keep_existing|apply_incoming>
+     ./venv/bin/python src/main.py --resolve-conflict <ID> <keep_existing|apply_incoming>
      ```
 
 ### High-Level AI Autonomy & ATT Topology
@@ -138,7 +139,7 @@ When the Scanner detects a semantic change in the story's state (e.g., a charact
 For complex background research, timeline auditing, and multi-tier logical analysis, the system supports dynamic AI team delegation and autonomous tool use. This suite is highly modular and is fully customized under the `autonomy` section in `config.yaml`:
 
 * **`enable_autonomy_suite: false`**
-  * *Master Switch*: Toggle to enable or disable the entire autonomy suite. If `false`, all other autonomy processes are bypassed and no dynamic teams, brokers, or supervisors are instantiated.
+  * *Narrative Autonomy Switch*: Disables narrative discussion teams, delegation, supervisors, and custom ATT query tools. The ATT manager may still initialize when the independently configured Database Management Committee is enabled, because database governance uses an ATT committee.
 * **`enable_autonomous_queries: false`**
   * *Tool Loop Toggle*: Allows AI agents to run bounded ReAct (Reasoning & Action) loops, autonomously executing SQLite queries, FAISS vector searches, and paginated gated file lookups in the background.
 * **`enable_dynamic_delegation: false`**
@@ -161,30 +162,34 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Tool Gating Mode*: Strategy for executing tools. Options: `"text_react"` (sequential ReAct loops parsing XML/Thought blocks), `"native"` (parallel structured function calling), or `"auto"` (automatically use native structured calling if the LLM adapter supports it, else fall back to text ReAct).
 * **`max_tool_rounds: 5`**
   * *Native Parallel Rounds*: The maximum reasoning rounds allowed during native parallel structured tool calls.
-* **`strict_state_persistence: true`**
-  * *Strict Persistence*: Enables ORM-level cascading deletions to automatically clean up orphaned messages, broker agreements, and proposals on state changes.
+* **`state_db_path: "novel/process/att_state_v6.db"`**
+  * *ATT State Store*: Restores the current ATT agent/team state on startup and writes a full, internally consistent snapshot during orderly shutdown.
 
 ### SQLite Auditing: Database Management Committee
 
-Direct transactions on the SQLite memory database are guarded by the 3-AI Database Management Committee. Every SQLite execution is intercepted, audited, and safety-verified automatically before being committed.
+Database Management Committee coverage is explicitly configurable. The default profile audits ATT SQL, chapter fact batches, failed-commit replay, and conflict resolution. Enable individual scopes in `database_audit.scopes` when character, relationship, rule, event, vector, revision, conflict-queue, commit/schema metadata, or maintenance operations also require review. `failure_policy: deny` is the recommended fail-closed setting. See [Database_Management_Committee.md](Database_Management_Committee.md).
 
 ### Recovery from Failures
 
 If an API error or logic crash happens during a database commit:
 
-1. Check failed commits: `python src/main.py --failed-commits`
-2. Replay a commit: `python src/main.py --replay-commit <COMMIT_ID>`
+1. Check failed commits: `./venv/bin/python src/main.py --failed-commits`
+2. Replay a commit: `./venv/bin/python src/main.py --replay-commit <COMMIT_ID>`
+3. Preview all eligible failed commits without writing: `./venv/bin/python src/main.py --replay-failed-bulk --replay-dry-run`
+4. Replay in bulk with bounded retries: `./venv/bin/python src/main.py --replay-failed-bulk --replay-max-attempts 3 --replay-policy continue`
+
+The bulk report includes validation eligibility, attempts, outcome, final status, and error details for every processed commit. Use `--replay-policy stop` to stop after the first invalid or exhausted commit.
 
 ### Rebuilding & Recovering Search Index
 
 If you change your Embedding model or need to refresh the vector store:
 
 ```bash
-python src/main.py --rebuild-vectors
+./venv/bin/python src/main.py --rebuild-vectors
 ```
 
 **Automatic Self-Healing**:
-If the FAISS index file is missing or corrupted but SQLite has active records in the `vector_metadata` table, the system automatically reconstructs the vector index from database metadata on startup without requiring manual intervention.
+At startup, the system reconciles the loaded FAISS count and contiguous IDs against active SQLite `vector_metadata`. Missing/corrupt indexes and metadata/index mismatches trigger reconstruction without deleting source metadata. Each rebuild is recorded in `vector_rebuild_runs`; skipped source rows and their reasons remain available in `vector_rebuild_audit` and as soft-deleted metadata tombstones.
 
 ## 6. Real-Time Terminal Dashboard & Logging
 
@@ -196,7 +201,7 @@ When running workflow commands (`--start`, `--plan`, `--write`, `--scan`, `--aut
 
 * **Workspace Alternate Buffer**: Runs full-screen and perfectly restores your previous screen output upon completion, protecting your terminal scroll history.
 * **Header Bar**: Tracks current high-level operations (e.g. World Building, Chapter Planning, Prose Writing, Reviewing) and overall chapter auto-progress.
-* **Lineage Tree of Active ATTs (Left Pane)**: Visualizes the active parent and child Agent Teams (ATs) spawned dynamically, highlighting active agents and their real-time execution states (e.g., `Idle`, `Thinking...`, `Executing Tool: tool_name`).
+* **Lineage Tree of Active ATT (Left Pane)**: Visualizes the active parent and child Agent Teams (ATs) spawned dynamically, highlighting active agents and their real-time execution states (e.g., `Idle`, `Thinking...`, `Executing Tool: tool_name`).
 * **Real-Time Agent Terminal (Right Top Pane)**: Displays scrolling agent thoughts (`🧠`), actions (`⚙️`), observations (`👁️`), and final answers (`✨`) in real time. **All core workflow AI agents** (Architect, Planner, Writer, Critic, Scanner) are fully integrated to display their dynamic activities in real-time alongside dynamic ATT debate agents!
 * **System & Memory Log (Right Bottom Pane)**: Captures and scrolls general runtime messages cleanly in a designated panel, dynamically silencing background outputs to prevent screen garbling.
 
@@ -213,7 +218,11 @@ While keeping the terminal output clean and visually stunning, the system record
 You can refine the AI's behavior without changing Python code by editing the files in `i18n/AI/`:
 
 * `fragments.json`: Short instructions used within the context funnel.
+* `context.json`: Story-state, retrieval, conflict, and archive context shown to models.
+* `runtime.json`: ATT committee instructions, tool text, audit prompts, and model-visible runtime text.
 * `templates.md`: The core system prompts for each agent.
+
+Human-visible CLI, dashboard, log, error, and report text is stored separately in `i18n/messages/{language}/runtime.json`. AI-visible content must not be placed there.
 
 ---
 

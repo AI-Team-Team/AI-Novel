@@ -5,7 +5,7 @@ from typing import Dict
 
 import config
 from llm_client import LLMClientError
-from workflow_components.resources import get_resource
+from workflow_components.resources import get_ai_resource, get_message
 
 class ScanningWorkflowMixin:
     def _critic_review_extracted_facts(
@@ -29,30 +29,45 @@ class ScanningWorkflowMixin:
 
         char_lines = []
         for c in db_chars:
-            char_lines.append(f"- {c[0]} (status: {c[2]})")
+            char_lines.append(
+                "- " + c[0] + get_ai_resource("ui.status_label", status=c[2])
+            )
         rule_lines = []
         for r in db_rules:
-            rule_lines.append(f"- [{r[0]}] {r[1]} (strictness: {r[2]})")
+            rule_lines.append(get_ai_resource(
+                "ui.rule_item_no_newline",
+                category=r[0],
+                content=r[1],
+                strictness=r[2],
+            ))
         event_lines = []
         for e in db_events:
-            event_lines.append(f"- {e[1]}: {e[2]} (location: {e[6]})")
+            event_lines.append(get_ai_resource(
+                "ui.event_item_no_newline",
+                timestamp=e[3],
+                name=e[1],
+                description=e[2],
+                location=e[6],
+            ))
 
-        review_task = get_resource("prompt.critic_fact_review_task")
-        review_format = get_resource("prompt.critic_fact_review_format")
-        review_prompt = (
-            f"## Current Story State\n\n"
-            f"### Characters\n{'\n'.join(char_lines) if char_lines else '(none)'}\n\n"
-            f"### Strict World Rules\n{'\n'.join(rule_lines) if rule_lines else '(none)'}\n\n"
-            f"### Recent Events\n{'\n'.join(event_lines) if event_lines else '(none)'}\n\n"
-            f"## Extracted Facts (Chapter {chapter_num})\n"
-            f"```json\n{json.dumps(facts_data, indent=2, ensure_ascii=False)}\n```\n\n"
-            f"## Chapter Text\n{chapter_text}\n\n"
-            f"{review_task}\n\n{review_format}\n{self._language_rule()}"
+        review_task = get_ai_resource("prompt.critic_fact_review_task")
+        review_format = get_ai_resource("prompt.critic_fact_review_format")
+        review_prompt = get_ai_resource(
+            "prompt.critic_fact_review_wrapper",
+            characters="\n".join(char_lines) if char_lines else get_ai_resource("ui.none_bracket"),
+            rules="\n".join(rule_lines) if rule_lines else get_ai_resource("ui.none_bracket"),
+            events="\n".join(event_lines) if event_lines else get_ai_resource("ui.none_bracket"),
+            chapter_num=chapter_num,
+            facts_json=json.dumps(facts_data, indent=2, ensure_ascii=False),
+            chapter_text=chapter_text,
+            review_task=review_task,
+            review_format=review_format,
+            language_rule=self._language_rule(),
         )
 
         if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
-            self.att_manager.dashboard.active_stage = f"Scanning Chapter {chapter_num}"
-            self.att_manager.dashboard.add_activity("Critic", "Thought", f"Checking extracted facts for continuity and timeline consistency...")
+            self.att_manager.dashboard.active_stage = get_message("dashboard.scanning", chapter_num=chapter_num)
+            self.att_manager.dashboard.add_activity("Critic", "Thought", get_message("dashboard.fact_review_detail"))
             self.att_manager.dashboard.refresh()
 
         try:
@@ -63,7 +78,7 @@ class ScanningWorkflowMixin:
             )
             self._log_llm_interaction(
                 role="Critic",
-                phase=f"Chapter {self._num3(chapter_num)} Fact Review",
+                phase=get_message("phase.chapter_fact_review", chapter=self._num3(chapter_num)),
                 prompt=review_prompt,
                 response=response,
                 system_instruction=prompts["critic"],
@@ -71,12 +86,12 @@ class ScanningWorkflowMixin:
             )
             review_result = json.loads(response)
         except Exception as err:
-            self.logger.warning(f"Critic fact review failed, proceeding without review: {err}")
+            self.logger.warning(get_message("runtime.critic_failed", error=err))
             return facts_data
 
         issues = review_result.get("issues", [])
         if not issues:
-            self.logger.info("Critic fact review: no issues found.")
+            self.logger.info(get_message("runtime.critic_clean"))
             return facts_data
 
         # Map fact_type to payload keys
@@ -124,15 +139,18 @@ class ScanningWorkflowMixin:
                 existing_obj={"reason": reason, "severity": severity},
                 source="critic_fact_review",
                 chapter_num=chapter_num,
-                notes=f"Critic review: {reason}",
+                notes=get_ai_resource("runtime.critic_review_note", reason=reason),
                 blocking_level=(
                     self.memory.BLOCKING if severity == "BLOCKING" else self.memory.NON_BLOCKING
                 ),
             )
-            self.logger.info(
-                "Critic flagged %s issue: %s[%d] — %s",
-                severity, fact_type, fact_index, reason,
-            )
+            self.logger.info(get_message(
+                "runtime.critic_issue",
+                severity=severity,
+                fact_type=fact_type,
+                fact_index=fact_index,
+                reason=reason,
+            ))
 
             # Mark BLOCKING facts for removal
             if severity == "BLOCKING" and payload_key:
@@ -145,12 +163,16 @@ class ScanningWorkflowMixin:
                 item for i, item in enumerate(original) if i not in indices
             ]
             removed_count = len(indices)
-            self.logger.info("Removed %d BLOCKING %s from payload.", removed_count, key)
+            self.logger.info(get_message(
+                "runtime.critic_removed",
+                count=removed_count,
+                payload_key=key,
+            ))
 
         return facts_data
 
     def scan_chapter(self, chapter_num: int) -> str:
-        self.logger.info(f"Scanning Chapter {chapter_num} for facts...")
+        self.logger.info(get_message("runtime.scan_chapter", chapter_num=chapter_num))
         prompts = self._get_system_prompts()
 
         path = self.get_chapter_path(chapter_num)
@@ -158,15 +180,15 @@ class ScanningWorkflowMixin:
             with open(path, "r", encoding="utf-8") as f:
                 chapter_text = f.read()
         except FileNotFoundError:
-            raise RuntimeError(f"Chapter {chapter_num} not found.")
+            raise RuntimeError(get_message("runtime.chapter_missing", chapter_num=chapter_num))
 
-        text_prefix = get_resource("label.chapter_text") + "："
-        extract_instruction = get_resource("prompt.scanner_task")
+        text_prefix = get_ai_resource("label.chapter_text") + "："
+        extract_instruction = get_ai_resource("prompt.scanner_task")
         scanner_prompt = f"{text_prefix}\n{chapter_text}\n\n{extract_instruction}\n{self._language_rule()}"
 
         if hasattr(self, "att_manager") and getattr(self.att_manager, "dashboard", None):
-            self.att_manager.dashboard.active_stage = f"Scanning Chapter {chapter_num}"
-            self.att_manager.dashboard.add_activity("Scanner", "Thought", f"Extracting events, character changes, and rule facts from prose...")
+            self.att_manager.dashboard.active_stage = get_message("dashboard.scanning", chapter_num=chapter_num)
+            self.att_manager.dashboard.add_activity("Scanner", "Thought", get_message("dashboard.scanning_detail"))
             self.att_manager.dashboard.refresh()
 
         try:
@@ -179,7 +201,7 @@ class ScanningWorkflowMixin:
             raise RuntimeError(str(e)) from e
         self._log_llm_interaction(
             role="Scanner",
-            phase=f"Chapter {self._num3(chapter_num)} Extraction",
+            phase=get_message("phase.chapter_extraction", chapter=self._num3(chapter_num)),
             prompt=scanner_prompt,
             response=raw_response,
             system_instruction=prompts["scanner"],
@@ -187,7 +209,7 @@ class ScanningWorkflowMixin:
         )
 
         data = self._extract_json(raw_response)
-        summary_lines = [get_resource("label.chapter_summary_prefix", chapter_num=chapter_num)]
+        summary_lines = [get_ai_resource("label.chapter_summary_prefix", chapter_num=chapter_num)]
 
         if not data:
             self._save_file(
@@ -195,7 +217,7 @@ class ScanningWorkflowMixin:
                 raw_response,
                 self.facts_dir,
             )
-            raise RuntimeError("Scanner returned invalid JSON.")
+            raise RuntimeError(get_message("runtime.scanner_invalid_json"))
         validation_errors = self._validate_fact_payload(data)
         if validation_errors:
             self._save_file(
@@ -203,7 +225,7 @@ class ScanningWorkflowMixin:
                 json.dumps({"errors": validation_errors, "payload": data}, indent=2, ensure_ascii=False),
                 self.facts_dir,
             )
-            raise RuntimeError("Scanner payload failed schema validation.")
+            raise RuntimeError(get_message("runtime.scanner_schema_error"))
 
         # Critic pre-review: LLM-based contradiction detection before DB commit.
         # BLOCKING issues are removed from the payload; NON_BLOCKING issues are
@@ -213,6 +235,13 @@ class ScanningWorkflowMixin:
             facts_data=data,
             chapter_text=chapter_text,
             prompts=prompts,
+        )
+
+        self._audit_database_batch(
+            "chapter_fact_batches",
+            "scan_chapter_fact_batch",
+            data,
+            chapter_num,
         )
 
         commit_id = self.memory.begin_chapter_commit(chapter_num, source="scan_chapter", payload=data)
@@ -226,8 +255,8 @@ class ScanningWorkflowMixin:
                 source_commit_id=commit_id,
                 intent_tag="scan_extract",
             )
-            self.memory.end_batch(success=True)
             self.memory.finalize_chapter_commit(commit_id, status="COMPLETED", conflicts_count=new_conflicts)
+            self.memory.end_batch(success=True)
         except Exception as e:
             self.memory.end_batch(success=False)
             self.memory.finalize_chapter_commit(
@@ -238,7 +267,7 @@ class ScanningWorkflowMixin:
             )
             raise
 
-        summary_lines.append(get_resource("label.commit_id", commit_id=commit_id))
+        summary_lines.append(get_ai_resource("label.commit_id", commit_id=commit_id))
 
         self._save_file(
             f"chapter_{self._num3(chapter_num)}_facts.json",

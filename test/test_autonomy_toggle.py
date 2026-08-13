@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import shutil
+from types import SimpleNamespace
 
 # Add src and root to path
 CURRENT_DIR = os.path.dirname(__file__)
@@ -25,6 +26,9 @@ class TestAutonomyToggleGating(unittest.TestCase):
 
         # Mock config values
         self.old_autonomy_suite = getattr(config, "ENABLE_AUTONOMY_SUITE", True)
+        self.old_autonomous_queries = getattr(config, "ENABLE_AUTONOMOUS_QUERIES", True)
+        self.old_att_state_path = config.ATT_STATE_DB_PATH
+        config.ATT_STATE_DB_PATH = os.path.join(self.tmpdir, "att_state.db")
 
         # Create minimal WorkflowManager subclass/instance with mocked clients and logs
         self.wf = WorkflowManager.__new__(WorkflowManager)
@@ -43,52 +47,61 @@ class TestAutonomyToggleGating(unittest.TestCase):
         self.wf._save_file = lambda filename, content, dir_path: os.path.join(dir_path, filename)
 
     def tearDown(self):
+        manager = getattr(self.wf, "att_manager", None)
+        if manager is not None and manager.__class__.__module__.startswith("ai_team_team"):
+            self.wf.close_autonomy()
         config.ENABLE_AUTONOMY_SUITE = self.old_autonomy_suite
+        config.ENABLE_AUTONOMOUS_QUERIES = self.old_autonomous_queries
+        config.ATT_STATE_DB_PATH = self.old_att_state_path
         os.chdir(self.old_cwd)
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_planning_mixin_respects_toggle(self):
         # 1. Test when ENABLE_AUTONOMY_SUITE is True (should call att_manager)
         config.ENABLE_AUTONOMY_SUITE = True
-        self.wf.att_manager.get_preset.return_value = {"roles": [], "system_instructions": ""}
         self.wf._append_structured_discussion = unittest.mock.MagicMock()
         self.wf.get_guide_path = lambda chapter_num: "guide_path"
-        
-        # When discussion succeeds
-        self.wf.att_manager.execute_team_discussion_sync.return_value = "Final Answer: Refined Guide"
+        team = SimpleNamespace(members=[SimpleNamespace(name="Reviewer_Arbitrator")])
+        self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
+        self.wf._execute_att_discussion = unittest.mock.MagicMock(
+            return_value="Reviewer_Arbitrator: Final Answer: Refined Guide"
+        )
         refined = self.wf._refine_chapter_guide_with_discussion(1, "Initial Guide", {})
         self.assertEqual(refined, "Refined Guide")
-        self.wf.att_manager.create_agent_team.assert_called()
+        self.wf._create_att_team.assert_called()
 
         # Reset mock
-        self.wf.att_manager.create_agent_team.reset_mock()
+        self.wf._create_att_team.reset_mock()
 
         # 2. Test when ENABLE_AUTONOMY_SUITE is False (should bypass discussion)
         config.ENABLE_AUTONOMY_SUITE = False
         refined_bypassed = self.wf._refine_chapter_guide_with_discussion(1, "Initial Guide", {})
         self.assertEqual(refined_bypassed, "Initial Guide")
-        self.wf.att_manager.create_agent_team.assert_not_called()
+        self.wf._create_att_team.assert_not_called()
 
     def test_writing_mixin_respects_toggle(self):
         # 1. Test when ENABLE_AUTONOMY_SUITE is True
         config.ENABLE_AUTONOMY_SUITE = True
-        self.wf.att_manager.get_preset.return_value = {"roles": [], "system_instructions": ""}
         self.wf._append_structured_discussion = unittest.mock.MagicMock()
         self.wf.get_chapter_path = lambda chapter_num: "chapter_path"
-        self.wf.att_manager.execute_team_discussion_sync.return_value = "Final Answer: Polished Prose"
+        team = SimpleNamespace(members=[SimpleNamespace(name="Editor_In_Chief")])
+        self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
+        self.wf._execute_att_discussion = unittest.mock.MagicMock(
+            return_value="Editor_In_Chief: Final Answer: Polished Prose"
+        )
         
         revised, _ = self.wf._review_and_revise_chapter(1, "Guide", "Initial Prose", {})
         self.assertEqual(revised, "Polished Prose")
-        self.wf.att_manager.create_agent_team.assert_called()
+        self.wf._create_att_team.assert_called()
 
         # Reset mock
-        self.wf.att_manager.create_agent_team.reset_mock()
+        self.wf._create_att_team.reset_mock()
 
         # 2. Test when ENABLE_AUTONOMY_SUITE is False
         config.ENABLE_AUTONOMY_SUITE = False
         revised_bypassed, _ = self.wf._review_and_revise_chapter(1, "Guide", "Initial Prose", {})
         self.assertEqual(revised_bypassed, "Initial Prose")
-        self.wf.att_manager.create_agent_team.assert_not_called()
+        self.wf._create_att_team.assert_not_called()
 
     def test_project_mixin_respects_toggle(self):
         # Setup planner client mock for direct generation
@@ -98,8 +111,11 @@ class TestAutonomyToggleGating(unittest.TestCase):
 
         # 1. Test when ENABLE_AUTONOMY_SUITE is True
         config.ENABLE_AUTONOMY_SUITE = True
-        self.wf.att_manager.get_preset.return_value = {"roles": [], "system_instructions": ""}
-        self.wf.att_manager.execute_team_discussion_sync.return_value = "Final Answer: Refined Outline"
+        team = SimpleNamespace(members=[SimpleNamespace(name="Arc_Arbitrator")])
+        self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
+        self.wf._execute_att_discussion = unittest.mock.MagicMock(
+            return_value="Arc_Arbitrator: Final Answer: Refined Outline"
+        )
 
         outline = self.wf._generate_outline_with_discussion(
             phase_name="test_phase",
@@ -107,13 +123,13 @@ class TestAutonomyToggleGating(unittest.TestCase):
             revise_prompt_builder=None,
             rounds=1,
             output_filename="test_outline.md",
-            prompts={}
+            prompts={"planner": "planner"}
         )
         self.assertEqual(outline, "Refined Outline")
-        self.wf.att_manager.create_agent_team.assert_called()
+        self.wf._create_att_team.assert_called()
 
         # Reset mock
-        self.wf.att_manager.create_agent_team.reset_mock()
+        self.wf._create_att_team.reset_mock()
 
         # 2. Test when ENABLE_AUTONOMY_SUITE is False
         config.ENABLE_AUTONOMY_SUITE = False
@@ -123,10 +139,10 @@ class TestAutonomyToggleGating(unittest.TestCase):
             revise_prompt_builder=None,
             rounds=1,
             output_filename="test_outline.md",
-            prompts={}
+            prompts={"planner": "planner"}
         )
         self.assertEqual(outline_bypassed, "Direct Generated Outline")
-        self.wf.att_manager.create_agent_team.assert_not_called()
+        self.wf._create_att_team.assert_not_called()
 
     def test_workflow_enforce_conflict_respects_toggle(self):
         self.wf.memory = unittest.mock.MagicMock()
@@ -193,6 +209,71 @@ class TestAutonomyToggleGating(unittest.TestCase):
         asyncio.run(handler(model_name=model_key, prompt="test", system_instruction="Hello World."))
         self.wf.critic_client.generate.assert_called_once()
 
+    def test_autonomous_query_toggle_controls_custom_att_tools(self):
+        from workflow_components.autonomy_mixin import AutonomyWorkflowMixin
+
+        self.wf.initialize_autonomy = AutonomyWorkflowMixin.initialize_autonomy.__get__(self.wf)
+        self.wf.architect_client = unittest.mock.MagicMock()
+        self.wf.planner_client = unittest.mock.MagicMock()
+        self.wf.writer_client = unittest.mock.MagicMock()
+        self.wf.critic_client = unittest.mock.MagicMock()
+        self.wf.scanner_client = unittest.mock.MagicMock()
+        config.ENABLE_AUTONOMY_SUITE = True
+        config.ENABLE_AUTONOMOUS_QUERIES = False
+
+        self.wf.initialize_autonomy()
+
+        custom_tools = {"query_sqlite", "search_faiss", "read_file_chunk", "read_file_tail"}
+        self.assertTrue(custom_tools.isdisjoint(self.wf.att_manager.global_tools))
+        self.assertNotIn("query_sqlite", self.wf.att_manager.tool_auditors)
+        for preset_name in (
+            "conflict_resolution",
+            "database_management",
+            "planning",
+            "editorial",
+            "world_bible",
+            "plot_outline",
+        ):
+            self.assertEqual(len(self.wf.att_manager.get_preset(preset_name)["roles"]), 3)
+
+    def test_att_sql_tool_commits_with_thread_safe_connection_and_dmc_has_no_tools(self):
+        import asyncio
+        from memory import MemoryManager
+        from workflow_components.autonomy_mixin import AutonomyWorkflowMixin
+
+        memory = MemoryManager(
+            os.path.join(self.tmpdir, "att_tool.db"),
+            os.path.join(self.tmpdir, "att_tool.faiss"),
+        )
+        self.wf.memory = memory
+        self.wf.initialize_autonomy = AutonomyWorkflowMixin.initialize_autonomy.__get__(self.wf)
+        self.wf.architect_client = unittest.mock.MagicMock()
+        self.wf.planner_client = unittest.mock.MagicMock()
+        self.wf.writer_client = unittest.mock.MagicMock()
+        self.wf.critic_client = unittest.mock.MagicMock()
+        self.wf.scanner_client = unittest.mock.MagicMock()
+        self.wf.embedding_client = unittest.mock.MagicMock()
+        config.ENABLE_AUTONOMY_SUITE = True
+        config.ENABLE_AUTONOMOUS_QUERIES = True
+
+        try:
+            self.wf.initialize_autonomy()
+            tool = self.wf.att_manager.global_tools["query_sqlite"]
+            result = asyncio.run(
+                tool(
+                    "INSERT INTO schema_meta (key, value) "
+                    "VALUES ('att_tool_commit', 'yes')"
+                )
+            )
+            self.assertIn("Rows affected: 1", result)
+            self.assertEqual(memory.get_schema_meta("att_tool_commit"), "yes")
+
+            committee_team = self.wf.db_committee._create_team()
+            self.assertEqual(committee_team.tools, {})
+        finally:
+            memory.close()
+            self.wf.memory = None
+
     def test_faiss_rebuild_and_recovery(self):
         # 1. Verify rebuild_vector_index_from_metadata is non-blocking when index is None
         from memory import MemoryManager
@@ -248,6 +329,7 @@ class TestAutonomyToggleGating(unittest.TestCase):
                         
                         # It should have automatically triggered rebuild_vector_index on startup!
                         mock_rebuild.assert_called_once()
+                        wf_mgr.close()
 
 if __name__ == "__main__":
     unittest.main()

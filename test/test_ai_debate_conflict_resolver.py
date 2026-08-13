@@ -6,6 +6,7 @@ import tempfile
 import json
 import unittest
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 # Setup paths
 CURRENT_DIR = os.path.dirname(__file__)
@@ -57,7 +58,16 @@ class AIDebateConflictResolverTests(unittest.TestCase):
 
         self.workflow.ai_resolve_conflicts = True
         self.workflow.in_auto_mode = False
-        self.workflow.initialize_autonomy()
+        self.workflow._create_att_team = MagicMock(
+            return_value=SimpleNamespace(
+                members=[
+                    SimpleNamespace(name="Historian_Critic"),
+                    SimpleNamespace(name="Prose_Scanner"),
+                    SimpleNamespace(name="Consensus_Planner"),
+                ]
+            )
+        )
+        self.workflow._execute_att_discussion = MagicMock()
 
     def tearDown(self):
         self.workflow.memory.close()
@@ -80,21 +90,16 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        # 2. Mock LLM outputs
-        outputs = [
-            "Final Answer: Keep Iris dead for tragic impact!",
-            "Final Answer: Iris must live because she has an ongoing harbor arc.",
-            "Final Answer: " + json.dumps({
+        # 2. Mock the ATT transcript using current member-prefixed format.
+        self.workflow._execute_att_discussion.return_value = (
+            "Historian_Critic: Final Answer: Keep Iris dead for tragic impact!\n"
+            "Prose_Scanner: Final Answer: Iris must live because she has an ongoing harbor arc.\n"
+            "Consensus_Planner: Final Answer: " + json.dumps({
                 "action": "apply_incoming",
                 "reasoning": "Iris surviving makes narrative sense to continue her harbor arc.",
                 "narrative_compromise": "Iris was barely alive, rescued by harbor fishermen."
             })
-        ]
-        def generate_mock(prompt, system_instruction=None, temperature=0.3, require_json=False, **kwargs):
-            if require_json:
-                return '{"is_healthy": true, "reason": "ok"}'
-            return outputs.pop(0) if outputs else "Final Answer: ok"
-        self.workflow.critic_client.generate.side_effect = generate_mock
+        )
 
         # 3. Trigger debate resolution under 1 round
         import config
@@ -131,21 +136,15 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        # 2. Mock LLM outputs choosing keep_existing
-        outputs = [
-            "Final Answer: Keep dead!",
-            "Final Answer: Prose advocate arg.",
-            "Final Answer: " + json.dumps({
+        self.workflow._execute_att_discussion.return_value = (
+            "Historian_Critic: Final Answer: Keep dead!\n"
+            "Prose_Scanner: Final Answer: Prose advocate arg.\n"
+            "Consensus_Planner: Final Answer: " + json.dumps({
                 "action": "keep_existing",
                 "reasoning": "Continuity rules strictly dictate dead remains dead.",
                 "narrative_compromise": "Iris remains dead."
             })
-        ]
-        def generate_mock(prompt, system_instruction=None, temperature=0.3, require_json=False, **kwargs):
-            if require_json:
-                return '{"is_healthy": true, "reason": "ok"}'
-            return outputs.pop(0) if outputs else "Final Answer: ok"
-        self.workflow.critic_client.generate.side_effect = generate_mock
+        )
 
         # 3. Trigger debate resolution
         import config
@@ -174,17 +173,11 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        # 2. Mock LLM outputs choosing an invalid action (standoff)
-        outputs = [
-            "Final Answer: Keep dead!",
-            "Final Answer: Let live!",
-            "Final Answer: We cannot agree on anything."
-        ]
-        def generate_mock(prompt, system_instruction=None, temperature=0.3, require_json=False, **kwargs):
-            if require_json:
-                return '{"is_healthy": true, "reason": "ok"}'
-            return outputs.pop(0) if outputs else "Final Answer: ok"
-        self.workflow.critic_client.generate.side_effect = generate_mock
+        self.workflow._execute_att_discussion.return_value = (
+            "Historian_Critic: Final Answer: Keep dead!\n"
+            "Prose_Scanner: Final Answer: Let live!\n"
+            "Consensus_Planner: Final Answer: We cannot agree on anything."
+        )
 
         # 3. Trigger debate resolution
         import config
@@ -217,17 +210,11 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.workflow.memory.upsert_character(name="Iris", status="alive", source="test", chapter_num=2)
 
         # 2. Bind the gating method from WorkflowManager (need to mock _enforce_conflict_free_state context)
-        # Mock LLM Planner to return standoff
-        outputs = [
-            "Final Answer: Arg1",
-            "Final Answer: Arg2",
-            "Final Answer: STANDOFF"
-        ]
-        def generate_mock(prompt, system_instruction=None, temperature=0.3, require_json=False, **kwargs):
-            if require_json:
-                return '{"is_healthy": true, "reason": "ok"}'
-            return outputs.pop(0) if outputs else "Final Answer: ok"
-        self.workflow.critic_client.generate.side_effect = generate_mock
+        self.workflow._execute_att_discussion.return_value = (
+            "Historian_Critic: Final Answer: Arg1\n"
+            "Prose_Scanner: Final Answer: Arg2\n"
+            "Consensus_Planner: Final Answer: STANDOFF"
+        )
 
         # Bind the target method
         from workflow import WorkflowManager as WM_original

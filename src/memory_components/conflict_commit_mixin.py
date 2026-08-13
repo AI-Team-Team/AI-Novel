@@ -2,6 +2,8 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
+from workflow_components.resources import get_ai_resource
+
 class MemoryConflictCommitMixin:
     @staticmethod
     def _flatten_dict(data: Any, prefix: str = "") -> Dict[str, Any]:
@@ -91,6 +93,28 @@ class MemoryConflictCommitMixin:
         source: str = "unknown",
         chapter_num: Optional[int] = None,
     ):
+        payload = {
+            "entity_type": entity_type,
+            "entity_key": entity_key,
+            "action": action,
+            "before": before_obj,
+            "after": after_obj,
+            "source": source,
+        }
+        try:
+            self._audit_database_operation(
+                "revision_writes",
+                "log_fact_revision",
+                payload,
+                chapter_num,
+            )
+        except Exception:
+            # Standalone fact writes have already staged their parent row by the
+            # time the exact before/after revision is known. Ensure a rejected
+            # revision audit cannot leave that parent mutation pending.
+            if self.conn and not self._in_batch:
+                self.conn.rollback()
+            raise
         self.cursor.execute(
             """INSERT INTO fact_revisions
                (entity_type, entity_key, action, before_json, after_json, source, chapter_num)
@@ -120,6 +144,19 @@ class MemoryConflictCommitMixin:
         priority: Optional[int] = None,
         suggested_action: Optional[str] = None,
     ) -> int:
+        self._audit_database_operation(
+            "conflict_queue_writes",
+            "queue_conflict",
+            {
+                "entity_type": entity_type,
+                "entity_key": entity_key,
+                "conflict_type": conflict_type,
+                "incoming": incoming_obj,
+                "existing": existing_obj,
+                "source": source,
+            },
+            chapter_num,
+        )
         normalized_blocking = (blocking_level or self._infer_blocking_level(conflict_type)).upper()
         if normalized_blocking not in {self.BLOCKING, self.NON_BLOCKING}:
             normalized_blocking = self.BLOCKING
@@ -185,6 +222,12 @@ class MemoryConflictCommitMixin:
         return self.cursor.lastrowid
 
     def begin_chapter_commit(self, chapter_num: int, source: str, payload: Optional[Dict] = None) -> str:
+        self._audit_database_operation(
+            "chapter_commit_metadata",
+            "begin_chapter_commit",
+            {"source": source, "payload": payload or {}},
+            chapter_num,
+        )
         commit_id = str(uuid.uuid4())
         self.cursor.execute(
             """INSERT INTO chapter_commits (commit_id, chapter_num, source, payload_json, status)
@@ -201,6 +244,19 @@ class MemoryConflictCommitMixin:
         conflicts_count: int = 0,
         error_message: str = "",
     ):
+        row = self.get_chapter_commit(commit_id)
+        self._audit_database_operation(
+            "chapter_commit_metadata",
+            "finalize_chapter_commit",
+            {
+                "commit_id": commit_id,
+                "from_status": row[4] if row else None,
+                "to_status": status,
+                "conflicts_count": conflicts_count,
+                "error_message": error_message,
+            },
+            row[1] if row else None,
+        )
         self.cursor.execute(
             """UPDATE chapter_commits
                SET status = ?,
@@ -254,6 +310,12 @@ class MemoryConflictCommitMixin:
         return self.cursor.fetchall()
 
     def purge_incomplete_chapter_commits(self, chapter_num: int, source: Optional[str] = None) -> int:
+        self._audit_database_operation(
+            "chapter_commit_metadata",
+            "purge_incomplete_chapter_commits",
+            {"chapter_num": chapter_num, "source": source},
+            chapter_num,
+        )
         if source:
             self.cursor.execute(
                 """DELETE FROM chapter_commits
@@ -427,41 +489,87 @@ class MemoryConflictCommitMixin:
         if action not in {"keep_existing", "apply_incoming"}:
             return False
 
-        if action == "apply_incoming":
-            if entity_type == "character" and conflict_type == "status_dead_to_alive":
-                self.upsert_character(
-                    name=entity_key,
-                    core_traits=incoming_json.get("core_traits"),
-                    attributes=incoming_json.get("attributes"),
-                    status=incoming_json.get("status"),
-                    source=source,
-                    chapter_num=chapter_num,
-                    conflict_safe=True,
-                )
-            elif entity_type == "relationship" and conflict_type == "relationship_type_change":
-                self.add_relationship(
-                    source=incoming_json.get("source_name"),
-                    target=incoming_json.get("target_name"),
-                    relation_type=incoming_json.get("relation_type"),
-                    details=incoming_json.get("details"),
-                    source_tag=source,
-                    chapter_num=chapter_num,
-                    conflict_safe=True,
-                )
-            else:
-                return False
-
-        status_note = resolver_note or f"resolved with action={action}"
-        self.cursor.execute(
-            """UPDATE conflict_queue
-               SET status = 'RESOLVED',
-                   notes = CASE
-                       WHEN notes IS NULL OR notes = '' THEN ?
-                       ELSE notes || '\n' || ?
-                   END,
-                   resolved_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
-            (status_note, status_note, conflict_id),
+        self._audit_database_operation(
+            "conflict_resolution",
+            "resolve_conflict",
+            {
+                "conflict_id": conflict_id,
+                "entity_type": entity_type,
+                "entity_key": entity_key,
+                "conflict_type": conflict_type,
+                "incoming": incoming_json,
+                "action": action,
+                "source": source,
+            },
+            chapter_num,
         )
-        self._maybe_commit()
-        return True
+        if action == "apply_incoming" and not (
+            (entity_type == "character" and conflict_type == "status_dead_to_alive")
+            or (
+                entity_type == "relationship"
+                and conflict_type == "relationship_type_change"
+            )
+        ):
+            return False
+
+        status_note = resolver_note or get_ai_resource(
+            "memory.manual_resolution_note", action=action
+        )
+        self._audit_database_operation(
+            "conflict_queue_writes",
+            "resolve_conflict_queue_row",
+            {
+                "conflict_id": conflict_id,
+                "from_status": row[8],
+                "to_status": "RESOLVED",
+                "action": action,
+                "resolver_note": status_note,
+            },
+            chapter_num,
+        )
+
+        started_batch = not self._in_batch
+        if started_batch:
+            self.begin_batch()
+        try:
+            if action == "apply_incoming":
+                if entity_type == "character":
+                    self.upsert_character(
+                        name=entity_key,
+                        core_traits=incoming_json.get("core_traits"),
+                        attributes=incoming_json.get("attributes"),
+                        status=incoming_json.get("status"),
+                        source=source,
+                        chapter_num=chapter_num,
+                        conflict_safe=True,
+                    )
+                else:
+                    self.add_relationship(
+                        source=incoming_json.get("source_name"),
+                        target=incoming_json.get("target_name"),
+                        relation_type=incoming_json.get("relation_type"),
+                        details=incoming_json.get("details"),
+                        source_tag=source,
+                        chapter_num=chapter_num,
+                        conflict_safe=True,
+                    )
+
+            self.cursor.execute(
+                """UPDATE conflict_queue
+                   SET status = 'RESOLVED',
+                       notes = CASE
+                           WHEN notes IS NULL OR notes = '' THEN ?
+                           ELSE notes || '\n' || ?
+                       END,
+                       resolved_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'PENDING'""",
+                (status_note, status_note, conflict_id),
+            )
+            resolved = self.cursor.rowcount == 1
+            if started_batch:
+                self.end_batch(success=resolved)
+            return resolved
+        except Exception:
+            if started_batch and self._in_batch:
+                self.end_batch(success=False)
+            raise

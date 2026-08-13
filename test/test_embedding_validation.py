@@ -13,6 +13,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 import config
+from workflow_components.resources import get_message
 
 class TestEmbeddingValidation(unittest.TestCase):
     def setUp(self):
@@ -24,15 +25,18 @@ class TestEmbeddingValidation(unittest.TestCase):
         # Save original config parameters
         self.orig_db_path = config.DB_PATH
         self.orig_faiss_path = config.FAISS_INDEX_PATH
+        self.orig_att_state_path = config.ATT_STATE_DB_PATH
         
         # Set config to temp paths
         config.DB_PATH = self.db_path
         config.FAISS_INDEX_PATH = self.faiss_path
+        config.ATT_STATE_DB_PATH = os.path.join(self.test_dir, "att_state.db")
 
     def tearDown(self):
         # Restore original config
         config.DB_PATH = self.orig_db_path
         config.FAISS_INDEX_PATH = self.orig_faiss_path
+        config.ATT_STATE_DB_PATH = self.orig_att_state_path
         
         # Remove temp directory
         shutil.rmtree(self.test_dir)
@@ -93,6 +97,7 @@ class TestEmbeddingValidation(unittest.TestCase):
         
         # Verify that "Hello World!" was NOT called a second time (lazy validation!)
         self.assertEqual(self.hello_world_calls, 1)
+        wm.close()
 
     @patch("workflow.LLMClient")
     def test_fingerprint_mismatch_raises_error(self, mock_llm_client_class):
@@ -114,7 +119,7 @@ class TestEmbeddingValidation(unittest.TestCase):
         # Verify it was saved
         fp1 = wm1.memory.get_schema_meta("embedding_fingerprint")
         self.assertEqual(json.loads(fp1), [0.1] * 128)
-        wm1.memory.close()
+        wm1.close()
         
         # 2. Second run: Mock a different embedding client returning a different fingerprint
         mock_embedding_client_2 = MagicMock()
@@ -132,8 +137,8 @@ class TestEmbeddingValidation(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             wm2.embedding_client.get_embedding("another query")
             
-        self.assertIn("Embedding Model Mismatch", str(ctx.exception))
-        wm2.memory.close()
+        self.assertEqual(get_message("runtime.vector_model_mismatch"), str(ctx.exception))
+        wm2.close()
 
     @patch("workflow.LLMClient")
     def test_dimension_validation_on_every_call(self, mock_llm_client_class):
@@ -158,7 +163,7 @@ class TestEmbeddingValidation(unittest.TestCase):
             wm.embedding_client.get_embedding("test")
             
         self.assertIn("Embedding dimension mismatch", str(ctx.exception))
-        wm.memory.close()
+        wm.close()
 
     @patch("workflow.LLMClient")
     def test_rebuild_vectors_updates_metadata_and_bypasses(self, mock_llm_client_class):
@@ -223,7 +228,7 @@ class TestEmbeddingValidation(unittest.TestCase):
         v = wm.embedding_client.get_embedding("successful call")
         self.assertEqual(len(v), 256)
         
-        wm.memory.close()
+        wm.close()
 
 if __name__ == "__main__":
     unittest.main()
