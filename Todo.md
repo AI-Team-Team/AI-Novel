@@ -18,7 +18,6 @@ Any resolved issues should not be stored in this document.
 3. Language guard now has confidence scoring (and excludes known character names), but still uses rewrite fallback as the final correction path.
 4. `ENABLE_BUDGET_MONITORING` and related token limits are defined in config but lack actual implementation in LLM clients, offering no cost circuit breakers.
 5. Critic fact-review failures currently pass the extracted payload through unchanged even though most semantic contradiction checks were removed from the deterministic memory layer; this needs an explicit user-selectable fail-closed, queue-for-review, or fail-open policy.
-6. The full unittest process intermittently emits `ResourceWarning` for late-collected SQLite connections around ATT persistence tests even though every AI-Novel manager follows `close_autonomy()`; isolate whether an AI-Novel test fixture or ATT's persistence teardown retains the final reference.
 
 ## Future Plans
 

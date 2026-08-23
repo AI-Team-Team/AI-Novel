@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import os
 import sqlite3
 from typing import Dict, Any, Optional, Tuple, List, Union
@@ -348,9 +349,11 @@ class AutonomyWorkflowMixin:
             try:
                 # ATT executes synchronous tools in worker threads. Use an
                 # operation-local connection instead of MemoryManager's
-                # thread-bound cursor, and let the context manager commit or
-                # roll back the standalone statement deterministically.
-                with sqlite3.connect(self.memory.db_path) as connection:
+                # thread-bound cursor. The Connection context commits or rolls
+                # back but does not close, so wrap it in closing as well.
+                with closing(
+                    sqlite3.connect(self.memory.db_path)
+                ) as connection, connection:
                     cursor = connection.execute(sql_command)
                     if cursor.description is not None:
                         return str(cursor.fetchall())
