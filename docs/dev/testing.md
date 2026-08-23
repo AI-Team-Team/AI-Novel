@@ -42,8 +42,9 @@ The `test/` directory contains standard test suites covering every layer of the 
 | `test_full_system.py` | System Simulation | End-to-end workspace flow and integration validations. |
 | `test_embedding_validation.py`| Vector Embeddings | Vector boundaries, dimension constraints, FAISS indexing, and semantic search. |
 | `test_ai_debate_conflict_resolver.py` | Dynamic Debate Gating | Resolving narrative character contradictions and rule collisions in bounded debates. |
-| `test_att_native_integration.py` | ATT Native/Structured Contract | OpenAI and Gemini schema translation, nested Unicode tool arguments, real ATT native tool-result round trip, and per-committee partial-result policies. |
-| `test_regressions.py` | Comprehensive Integration | Intent gates, rollback, database commits, language security, and structural rollbacks. |
+| `test_att_native_integration/` | ATT Native/Structured Contract | OpenAI and Gemini schema translation, nested Unicode tool arguments, real ATT native tool-result round trip, and per-committee partial-result policies. |
+| `test_autonomy_toggle/` | Autonomy Gating | Workflow toggles, generator routing, ATT tool lifecycle, and FAISS recovery behavior. |
+| `test_regressions/` | Comprehensive Integration | Focused modules for memory, retrieval, conflict governance, replay, continuous generation, fact review, language security, and structural rollbacks. |
 | `test_workflow_integration.py` | End-to-End Lifecycle | Write loop, conflict lifecycle, dry-run/bulk replay, retrieval chain, DMC scopes, and current ATT persistence lifecycle. |
 
 ## 4. Best Practices for Writing Tests
