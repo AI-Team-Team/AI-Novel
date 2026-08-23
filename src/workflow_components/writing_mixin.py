@@ -5,7 +5,6 @@ from typing import Dict, Tuple, Optional
 import config
 from llm_client import LLMClientError
 from workflow_components.resources import get_ai_resource, get_message
-from workflow_components.parsing import extract_att_member_answer
 
 class WritingWorkflowMixin:
     def _critic_review_chapter(self, chapter_num: int, guide_content: str, chapter_text: str, prompts: Dict[str, str]) -> str:
@@ -61,10 +60,12 @@ class WritingWorkflowMixin:
         )
 
         try:
-            transcript = self._execute_att_discussion(team, prompt, rounds)
-            final_text = (
-                extract_att_member_answer(transcript, team, "Editor_In_Chief")
-                or current_text
+            discussion_result = self._execute_att_discussion(team, prompt, rounds)
+            final_text = self._select_att_committee_answer(
+                discussion_result,
+                team,
+                "Editor_In_Chief",
+                "editorial",
             )
                 
             self._save_file(f"chapter_{self._num3(chapter_num)}.md", final_text, self.chapters_dir)
@@ -78,6 +79,7 @@ class WritingWorkflowMixin:
                 decision="chapter_text_finalized",
                 needs_revision=False,
                 artifact_paths=[self.get_chapter_path(chapter_num)],
+                att_result=discussion_result,
             )
             return final_text, get_message("status.editorial.approved")
         except Exception as e:

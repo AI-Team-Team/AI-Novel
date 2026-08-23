@@ -6,7 +6,6 @@ from typing import Dict
 import config
 from llm_client import LLMClientError
 from workflow_components.resources import get_ai_resource, get_message
-from workflow_components.parsing import extract_att_member_answer
 
 class ProjectWorkflowMixin:
     def _generate_outline_with_discussion(
@@ -49,10 +48,12 @@ class ProjectWorkflowMixin:
         )
 
         try:
-            transcript = self._execute_att_discussion(team, prompt, rounds)
-            final_outline = (
-                extract_att_member_answer(transcript, team, "Arc_Arbitrator")
-                or transcript
+            discussion_result = self._execute_att_discussion(team, prompt, rounds)
+            final_outline = self._select_att_committee_answer(
+                discussion_result,
+                team,
+                "Arc_Arbitrator",
+                "plot_outline",
             )
                 
             outline_path = self._save_file(output_filename, final_outline, self.plot_dir)
@@ -65,6 +66,7 @@ class ProjectWorkflowMixin:
                 decision=f"{phase_name}_finalized",
                 needs_revision=False,
                 artifact_paths=[outline_path],
+                att_result=discussion_result,
             )
             return final_outline
         except Exception as e:
@@ -133,10 +135,14 @@ class ProjectWorkflowMixin:
 
             try:
                 if team is not None:
-                    transcript = self._execute_att_discussion(team, prompt, rounds)
-                    world_bible = (
-                        extract_att_member_answer(transcript, team, "World_Arbitrator")
-                        or world_bible
+                    discussion_result = self._execute_att_discussion(
+                        team, prompt, rounds
+                    )
+                    world_bible = self._select_att_committee_answer(
+                        discussion_result,
+                        team,
+                        "World_Arbitrator",
+                        "world_bible",
                     )
                     
                 bible_path = self._save_file("world_bible.md", world_bible, self.world_dir)
@@ -149,6 +155,7 @@ class ProjectWorkflowMixin:
                     decision="world_bible_finalized",
                     needs_revision=False,
                     artifact_paths=[bible_path],
+                    att_result=discussion_result if team is not None else None,
                 )
             except Exception as e:
                 self.logger.warning(get_message("runtime.world_failed", error=e))

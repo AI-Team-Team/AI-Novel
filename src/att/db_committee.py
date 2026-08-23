@@ -7,9 +7,9 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 import config
-from ai_team_team import ATTManager
-from att.runtime import run_team_discussion
-from workflow_components.parsing import extract_att_member_answer, extract_json_payload
+from att.compat import ATTManager
+from att.runtime import run_team_discussion, select_designated_answer
+from workflow_components.parsing import extract_json_payload
 from workflow_components.resources import get_ai_resource, get_message
 
 
@@ -107,9 +107,17 @@ class DatabaseManagementCommittee:
             payload=json.dumps(payload, ensure_ascii=False, default=str),
         )
         try:
-            transcript = run_team_discussion(self.manager, team, prompt, rounds=1)
-            answer = extract_att_member_answer(
-                transcript, team, "Transaction_Planner"
+            discussion_result = run_team_discussion(
+                self.manager, team, prompt, rounds=1
+            )
+            answer = select_designated_answer(
+                discussion_result,
+                team,
+                "Transaction_Planner",
+                "database_management",
+                getattr(config, "COMMITTEE_PARTIAL_POLICIES", {}).get(
+                    "database_management", "reject"
+                ),
             )
             decision = extract_json_payload(answer or "")
             if not isinstance(decision, dict) or not isinstance(

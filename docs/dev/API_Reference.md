@@ -253,7 +253,11 @@ When continuous loops (`--auto`) or the explicit CLI flag `--ai-resolve-conflict
   * Parses final JSON payload, executes the safe transaction block, and records transcripts.
   * Returns `True` on successful resolution, `False` on standoff.
 
-## `src.autonomy`
+## `src.workflow_components.autonomy_mixin`
+
+`initialize_autonomy()` registers AI-Novel's generator handler against ATT's current public API. The handler forwards provider-neutral `tools` and `max_output_tokens` arguments without retrying a failed request after silently removing options. Model entries opt into native function calling with the literal YAML boolean `supports_native_tool_calling: true`.
+
+`_execute_att_discussion(team, prompt, rounds)` returns ATT's structured `DiscussionResult`. `_select_att_committee_answer(...)` enforces the configured per-committee partial-result policy and selects only the designated member's completed final-round answer.
 
 ### `GatedFileReader`
 
@@ -278,7 +282,7 @@ reader = GatedFileReader(large_threshold_kb: int = 50, max_chunk: int = 100)
 
 ## `src.att`
 
-This package coordinates dynamic recursively spawned Agent Teams (ATs) in a self-governing hierarchy, with P2P sibling communication gating, a 3-AI supervisory auditing system with recursive parent escalations, and safe ReAct tool execution.
+This package contains AI-Novel's compatibility boundary and synchronous lifecycle helpers for ATT. It validates the required ATT public API at startup, bridges asynchronous discussions, preserves structured `DiscussionResult` objects, and applies committee-specific partial-result policies.
 
 ## `src.att.db_committee`
 
@@ -298,4 +302,4 @@ Audits SQL queries for transactions.
   * `audit_operation(scope, operation, payload, chapter_num=None) -> Tuple[bool, str]`
   * `audit_batch_transaction(data, chapter_num, scope="chapter_fact_batches", operation="chapter_fact_batch") -> Tuple[bool, str]`
   * `should_audit(scope: str) -> bool`
-    Audits complete batch updates before DB serialization. (Note: Currently defined in the class but not invoked by the pipeline).
+    Audits complete batch updates before DB serialization. The write pipeline invokes this method for each enabled database-audit scope.

@@ -6,7 +6,6 @@ import tempfile
 import json
 import unittest
 from unittest.mock import MagicMock
-from types import SimpleNamespace
 
 # Setup paths
 CURRENT_DIR = os.path.dirname(__file__)
@@ -17,6 +16,7 @@ if SRC_DIR not in sys.path:
 
 from workflow import WorkflowManager
 from memory import MemoryManager
+from att_result_helpers import make_discussion_result, make_team
 
 class AIDebateConflictResolverTests(unittest.TestCase):
     def setUp(self):
@@ -58,15 +58,10 @@ class AIDebateConflictResolverTests(unittest.TestCase):
 
         self.workflow.ai_resolve_conflicts = True
         self.workflow.in_auto_mode = False
-        self.workflow._create_att_team = MagicMock(
-            return_value=SimpleNamespace(
-                members=[
-                    SimpleNamespace(name="Historian_Critic"),
-                    SimpleNamespace(name="Prose_Scanner"),
-                    SimpleNamespace(name="Consensus_Planner"),
-                ]
-            )
+        self.team = make_team(
+            "Historian_Critic", "Prose_Scanner", "Consensus_Planner"
         )
+        self.workflow._create_att_team = MagicMock(return_value=self.team)
         self.workflow._execute_att_discussion = MagicMock()
 
     def tearDown(self):
@@ -90,15 +85,18 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        # 2. Mock the ATT transcript using current member-prefixed format.
-        self.workflow._execute_att_discussion.return_value = (
-            "Historian_Critic: Final Answer: Keep Iris dead for tragic impact!\n"
-            "Prose_Scanner: Final Answer: Iris must live because she has an ongoing harbor arc.\n"
-            "Consensus_Planner: Final Answer: " + json.dumps({
+        # 2. Mock ATT's current structured discussion result.
+        self.workflow._execute_att_discussion.return_value = make_discussion_result(
+            self.team,
+            {
+                "Historian_Critic": "Keep Iris dead for tragic impact!",
+                "Prose_Scanner": "Iris must live because she has an ongoing harbor arc.",
+                "Consensus_Planner": json.dumps({
                 "action": "apply_incoming",
                 "reasoning": "Iris surviving makes narrative sense to continue her harbor arc.",
                 "narrative_compromise": "Iris was barely alive, rescued by harbor fishermen."
-            })
+                }),
+            },
         )
 
         # 3. Trigger debate resolution under 1 round
@@ -136,14 +134,17 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        self.workflow._execute_att_discussion.return_value = (
-            "Historian_Critic: Final Answer: Keep dead!\n"
-            "Prose_Scanner: Final Answer: Prose advocate arg.\n"
-            "Consensus_Planner: Final Answer: " + json.dumps({
+        self.workflow._execute_att_discussion.return_value = make_discussion_result(
+            self.team,
+            {
+                "Historian_Critic": "Keep dead!",
+                "Prose_Scanner": "Prose advocate arg.",
+                "Consensus_Planner": json.dumps({
                 "action": "keep_existing",
                 "reasoning": "Continuity rules strictly dictate dead remains dead.",
                 "narrative_compromise": "Iris remains dead."
-            })
+                }),
+            },
         )
 
         # 3. Trigger debate resolution
@@ -173,10 +174,13 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         conflict_id = conflicts[0][0]
 
-        self.workflow._execute_att_discussion.return_value = (
-            "Historian_Critic: Final Answer: Keep dead!\n"
-            "Prose_Scanner: Final Answer: Let live!\n"
-            "Consensus_Planner: Final Answer: We cannot agree on anything."
+        self.workflow._execute_att_discussion.return_value = make_discussion_result(
+            self.team,
+            {
+                "Historian_Critic": "Keep dead!",
+                "Prose_Scanner": "Let live!",
+                "Consensus_Planner": "We cannot agree on anything.",
+            },
         )
 
         # 3. Trigger debate resolution
@@ -210,10 +214,13 @@ class AIDebateConflictResolverTests(unittest.TestCase):
         self.workflow.memory.upsert_character(name="Iris", status="alive", source="test", chapter_num=2)
 
         # 2. Bind the gating method from WorkflowManager (need to mock _enforce_conflict_free_state context)
-        self.workflow._execute_att_discussion.return_value = (
-            "Historian_Critic: Final Answer: Arg1\n"
-            "Prose_Scanner: Final Answer: Arg2\n"
-            "Consensus_Planner: Final Answer: STANDOFF"
+        self.workflow._execute_att_discussion.return_value = make_discussion_result(
+            self.team,
+            {
+                "Historian_Critic": "Arg1",
+                "Prose_Scanner": "Arg2",
+                "Consensus_Planner": "STANDOFF",
+            },
         )
 
         # Bind the target method

@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import config
 from workflow_components.discussion import DiscussionLogger
@@ -156,6 +156,7 @@ class WorkflowIOMixin:
         decision: str = "",
         needs_revision: Optional[bool] = None,
         artifact_paths: Optional[List[str]] = None,
+        att_result: Optional[Any] = None,
     ):
         os.makedirs(self.discussions_dir, exist_ok=True)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -163,6 +164,13 @@ class WorkflowIOMixin:
         chapter_value = chapter_num if chapter_num is not None else "NA"
         round_value = round_index if round_index is not None else "NA"
         model_name = self._role_model_name(role)
+        att_status = getattr(att_result, "status", None)
+        if hasattr(att_status, "value"):
+            att_status = att_status.value
+        att_audit = getattr(att_result, "audit", None)
+        operational_status = getattr(att_audit, "operational_status", None)
+        if hasattr(operational_status, "value"):
+            operational_status = operational_status.value
         entry = {
             "log_id": log_id,
             "timestamp": timestamp,
@@ -176,6 +184,9 @@ class WorkflowIOMixin:
             "decision": decision,
             "needs_revision": needs_revision,
             "artifact_paths": artifact_paths or [],
+            "att_discussion_id": getattr(att_result, "discussion_id", None),
+            "att_status": att_status,
+            "att_operational_status": operational_status,
         }
         title = f"[{phase_type}] chapter={chapter_value} round={round_value} role={role}"
         md_lines = [
@@ -190,6 +201,9 @@ class WorkflowIOMixin:
             f"- `model`: {entry['model']}",
             f"- `decision`: {entry['decision'] or '-'}",
             f"- `needs_revision`: {entry['needs_revision'] if entry['needs_revision'] is not None else '-'}",
+            f"- `att_discussion_id`: {entry['att_discussion_id'] or '-'}",
+            f"- `att_status`: {entry['att_status'] or '-'}",
+            f"- `att_operational_status`: {entry['att_operational_status'] or '-'}",
             f"- `input_summary`: {entry['input_summary']}",
             f"- `output_summary`: {entry['output_summary']}",
             "- `artifact_paths`:",

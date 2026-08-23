@@ -875,12 +875,18 @@ class WorkflowTextDiscussionTests(unittest.TestCase):
         self.assertIn("`log_id`", content)
         self.assertIn("`input_summary`", content)
         self.assertIn("`output_summary`", content)
+        self.assertIn("`att_discussion_id`", content)
+        self.assertIn("`att_status`", content)
+        self.assertIn("`att_operational_status`", content)
         self.assertIn("`artifact_paths`", content)
         with open(index_path, "r", encoding="utf-8") as f:
             first = json.loads(f.readline().strip())
         self.assertIn("phase_type", first)
         self.assertIn("decision", first)
         self.assertIn("artifact_paths", first)
+        self.assertEqual(first["att_status"], "completed")
+        self.assertEqual(first["att_operational_status"], "healthy")
+        self.assertTrue(first["att_discussion_id"])
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 class AutoConflictResolverTests(unittest.TestCase):

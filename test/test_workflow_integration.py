@@ -20,7 +20,8 @@ from att.db_committee import DatabaseManagementCommittee
 from memory import MemoryManager
 from state_manager import StoryStateManager
 from workflow import WorkflowManager
-from workflow_components.parsing import extract_att_member_answer
+from att.runtime import select_designated_answer
+from att_result_helpers import make_discussion_result, make_team
 
 
 class _EmbeddingClient:
@@ -228,11 +229,15 @@ class ATTCurrentAPIIntegrationTests(unittest.TestCase):
                 wf.initialize_autonomy()
                 wf.db_committee.enabled = False
                 managers.append(wf)
+                self.assertEqual(
+                    os.path.realpath(wf.att_manager.config.workspace_root),
+                    os.path.realpath(tmpdir),
+                )
 
                 team = wf._create_att_team("planning", 1)
-                transcript = wf._execute_att_discussion(team, "Refine this guide", 1)
-                answer = extract_att_member_answer(
-                    transcript, team, "Reviewer_Arbitrator"
+                result = wf._execute_att_discussion(team, "Refine this guide", 1)
+                answer = select_designated_answer(
+                    result, team, "Reviewer_Arbitrator", "planning", "reject"
                 )
                 self.assertEqual(answer, "final guide")
                 self.assertEqual(len(team.members), 3)
@@ -315,10 +320,8 @@ class DatabaseAuditScopeIntegrationTests(unittest.TestCase):
             ("Schema_Auditor", "schema"),
             ("Transaction_Planner", "transaction"),
         ]
-        team = SimpleNamespace(
-            members=[SimpleNamespace(name=name) for name, _ in roles],
-            tools={"query_sqlite": object()},
-        )
+        team = make_team(*(name for name, _ in roles))
+        team.tools = {"query_sqlite": object()}
         create_calls = []
 
         def create_team(**kwargs):
@@ -348,7 +351,14 @@ class DatabaseAuditScopeIntegrationTests(unittest.TestCase):
 
         def discussion(_manager, _team, prompt, rounds):
             captured["prompt"] = prompt
-            return 'Transaction_Planner: {"approved": true, "reason": "ok"}'
+            return make_discussion_result(
+                team,
+                {
+                    "Security_Officer": "No objection.",
+                    "Schema_Auditor": "Schema is valid.",
+                    "Transaction_Planner": '{"approved": true, "reason": "ok"}',
+                },
+            )
 
         payload = {
             "events": [

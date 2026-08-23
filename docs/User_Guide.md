@@ -162,8 +162,18 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Tool Gating Mode*: Strategy for executing tools. Options: `"text_react"` (sequential ReAct loops parsing XML/Thought blocks), `"native"` (parallel structured function calling), or `"auto"` (automatically use native structured calling if the LLM adapter supports it, else fall back to text ReAct).
 * **`max_tool_rounds: 5`**
   * *Native Parallel Rounds*: The maximum reasoning rounds allowed during native parallel structured tool calls.
+* **`max_tool_argument_retries: 3`**
+  * *Argument Repair Limit*: Bounds ATT retries when a model emits malformed tool arguments.
+* **`max_tool_execution_retries: 2`** and **`tool_execution_retry_policy: "never"`**
+  * *Execution Replay Controls*: Bound execution retries and require an explicit idempotency policy (`"never"`, `"retry_safe"`, or `"typed_transient"`).
+* **`turn_failure_policy`**
+  * *Failure Isolation*: Selects `"isolate"` or `"abort"` independently for tool failures and LLM failures.
+* **`committee_partial_policies`**
+  * *Partial Discussion Decisions*: Creative committees may accept a partial discussion only when their designated arbitrator completed the final round. Conflict resolution and database governance reject partial discussions by default.
 * **`state_db_path: "novel/process/att_state_v6.db"`**
   * *ATT State Store*: Restores the current ATT agent/team state on startup and writes a full, internally consistent snapshot during orderly shutdown.
+
+Native tool calling is an explicit per-model capability. Set `supports_native_tool_calling: true` in `config/ai_model_config.yaml` only for an endpoint that actually supports provider-native function calling. Missing values and `false` select text ReAct in `auto` mode; quoted strings such as `"true"` are rejected because the field must be a YAML boolean. AI-Novel preserves provider tool schemas, structured tool calls, tool-result messages, Unicode and nested JSON arguments, and output-token limits across the ATT adapter boundary.
 
 ### SQLite Auditing: Database Management Committee
 

@@ -6,6 +6,7 @@ import asyncio
 import threading
 from typing import Any, Callable, Coroutine, TypeVar
 
+from att.compat import AgentTurnStatus, DiscussionResult, DiscussionStatus
 from workflow_components.resources import get_message
 
 
@@ -41,11 +42,75 @@ def run_att_async(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
     return result[0]
 
 
-def run_team_discussion(manager: Any, team: Any, prompt: str, rounds: int) -> str:
+class ATTDiscussionPolicyError(RuntimeError):
+    """Raised when a structured ATT result cannot authorize workflow output."""
+
+
+def run_team_discussion(
+    manager: Any,
+    team: Any,
+    prompt: str,
+    rounds: int,
+) -> DiscussionResult:
     if rounds < 1:
         raise ValueError(get_message("validation.att_rounds"))
     return run_att_async(
-        lambda: manager.execute_team_discussion(team, prompt, rounds=rounds)
+        lambda: manager.execute_team_discussion_detailed(
+            team, prompt, rounds=rounds
+        )
+    )
+
+
+def select_designated_answer(
+    result: DiscussionResult,
+    team: Any,
+    member_name: str,
+    committee: str,
+    policy: str,
+) -> str:
+    """Select the designated final-round answer under a partial-result policy."""
+
+    normalized_policy = str(policy).strip().lower()
+    if normalized_policy not in {"reject", "accept_designated_member"}:
+        raise ATTDiscussionPolicyError(
+            get_message(
+                "runtime.att_partial_policy_invalid",
+                committee=committee,
+                policy=normalized_policy,
+            )
+        )
+    if result.status == DiscussionStatus.PARTIAL and normalized_policy == "reject":
+        raise ATTDiscussionPolicyError(
+            get_message(
+                "runtime.att_partial_rejected",
+                committee=committee,
+                policy=normalized_policy,
+            )
+        )
+
+    target_ids = {
+        str(getattr(member, "agent_id", ""))
+        for member in list(getattr(team, "members", []) or [])
+        if (
+            str(getattr(member, "name", "")) == member_name
+            or str(getattr(member, "name", "")).startswith(f"{member_name}_")
+            or str(getattr(member, "role", "")) == member_name
+        )
+    }
+    final_round = result.rounds[-1] if result.rounds else None
+    if final_round is not None:
+        for turn in reversed(final_round.turns):
+            if str(turn.agent_id) not in target_ids:
+                continue
+            if turn.status == AgentTurnStatus.COMPLETED and (turn.answer or "").strip():
+                return str(turn.answer).strip()
+
+    raise ATTDiscussionPolicyError(
+        get_message(
+            "runtime.att_designated_incomplete",
+            committee=committee,
+            member=member_name,
+        )
     )
 
 

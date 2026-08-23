@@ -42,6 +42,7 @@ The `test/` directory contains standard test suites covering every layer of the 
 | `test_full_system.py` | System Simulation | End-to-end workspace flow and integration validations. |
 | `test_embedding_validation.py`| Vector Embeddings | Vector boundaries, dimension constraints, FAISS indexing, and semantic search. |
 | `test_ai_debate_conflict_resolver.py` | Dynamic Debate Gating | Resolving narrative character contradictions and rule collisions in bounded debates. |
+| `test_att_native_integration.py` | ATT Native/Structured Contract | OpenAI and Gemini schema translation, nested Unicode tool arguments, real ATT native tool-result round trip, and per-committee partial-result policies. |
 | `test_regressions.py` | Comprehensive Integration | Intent gates, rollback, database commits, language security, and structural rollbacks. |
 | `test_workflow_integration.py` | End-to-End Lifecycle | Write loop, conflict lifecycle, dry-run/bulk replay, retrieval chain, DMC scopes, and current ATT persistence lifecycle. |
 
@@ -69,9 +70,11 @@ Always ensure that in system code, dependencies such as `self.memory` are guarde
 
 ## 5. Mocking in the ATT Architecture
 
-ATT teams now receive explicit `roles_and_models` bindings from the configured role registry. Tests may mock the registered generator handler, or stub `_create_att_team` and `_execute_att_discussion` with the current member-prefixed transcript format. Assertions must select the designated arbitrator (`Consensus_Planner`, `Reviewer_Arbitrator`, `Editor_In_Chief`, and so on), never the first `Final Answer:` in a transcript.
+ATT teams receive explicit `roles_and_models` bindings from the configured role registry. Tests may mock the registered generator handler, or stub `_create_att_team` with a team whose members have stable `agent_id`, `name`, and `role` values. Stubbed `_execute_att_discussion` calls must return a real structured `DiscussionResult`; use `test/att_result_helpers.py` to build fixtures. Assertions must select the designated arbitrator's completed final-round turn (`Consensus_Planner`, `Reviewer_Arbitrator`, `Editor_In_Chief`, and so on), never parse a human-readable transcript for workflow authorization.
 
-Every real `ATTManager` test must use an isolated `config.ATT_STATE_DB_PATH` and call `close_autonomy()` in cleanup. Shutdown writes a full snapshot and releases ATT's single-writer lease.
+Native adapter tests must verify that `tools` and `max_output_tokens` reach the provider call, tool-result messages retain their call IDs, nested non-ASCII arguments survive the round trip, and ATT-only persistence metadata never reaches a provider request. Gemini parallel tool results must share one user content with multiple function-response parts. Capability probes are strict: only the literal boolean `True` enables native mode.
+
+Every real `ATTManager` test must use an isolated `config.ATT_STATE_DB_PATH` and call `close_autonomy()` in cleanup. In test mode, AI-Novel anchors ATT's managed workspace to the temporary state database directory, so `.att_doc_libs/` is removed by the test's normal temporary-directory cleanup. Tests that instantiate `ATTManager` directly must pass that temporary directory as `ATTConfig.workspace_root`. Shutdown writes a full snapshot and releases ATT's single-writer lease.
 
 When mocking the shared `critic_client.generate`, observe the following guidelines:
 

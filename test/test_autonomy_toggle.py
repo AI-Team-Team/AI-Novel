@@ -4,7 +4,6 @@ import os
 import sys
 import tempfile
 import shutil
-from types import SimpleNamespace
 
 # Add src and root to path
 CURRENT_DIR = os.path.dirname(__file__)
@@ -17,6 +16,7 @@ if ROOT_DIR not in sys.path:
 
 import config
 from workflow import WorkflowManager
+from att_result_helpers import make_discussion_result, make_team
 
 class TestAutonomyToggleGating(unittest.TestCase):
     def setUp(self):
@@ -61,10 +61,12 @@ class TestAutonomyToggleGating(unittest.TestCase):
         config.ENABLE_AUTONOMY_SUITE = True
         self.wf._append_structured_discussion = unittest.mock.MagicMock()
         self.wf.get_guide_path = lambda chapter_num: "guide_path"
-        team = SimpleNamespace(members=[SimpleNamespace(name="Reviewer_Arbitrator")])
+        team = make_team("Reviewer_Arbitrator")
         self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
         self.wf._execute_att_discussion = unittest.mock.MagicMock(
-            return_value="Reviewer_Arbitrator: Final Answer: Refined Guide"
+            return_value=make_discussion_result(
+                team, {"Reviewer_Arbitrator": "Refined Guide"}
+            )
         )
         refined = self.wf._refine_chapter_guide_with_discussion(1, "Initial Guide", {})
         self.assertEqual(refined, "Refined Guide")
@@ -84,10 +86,12 @@ class TestAutonomyToggleGating(unittest.TestCase):
         config.ENABLE_AUTONOMY_SUITE = True
         self.wf._append_structured_discussion = unittest.mock.MagicMock()
         self.wf.get_chapter_path = lambda chapter_num: "chapter_path"
-        team = SimpleNamespace(members=[SimpleNamespace(name="Editor_In_Chief")])
+        team = make_team("Editor_In_Chief")
         self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
         self.wf._execute_att_discussion = unittest.mock.MagicMock(
-            return_value="Editor_In_Chief: Final Answer: Polished Prose"
+            return_value=make_discussion_result(
+                team, {"Editor_In_Chief": "Polished Prose"}
+            )
         )
         
         revised, _ = self.wf._review_and_revise_chapter(1, "Guide", "Initial Prose", {})
@@ -111,10 +115,12 @@ class TestAutonomyToggleGating(unittest.TestCase):
 
         # 1. Test when ENABLE_AUTONOMY_SUITE is True
         config.ENABLE_AUTONOMY_SUITE = True
-        team = SimpleNamespace(members=[SimpleNamespace(name="Arc_Arbitrator")])
+        team = make_team("Arc_Arbitrator")
         self.wf._create_att_team = unittest.mock.MagicMock(return_value=team)
         self.wf._execute_att_discussion = unittest.mock.MagicMock(
-            return_value="Arc_Arbitrator: Final Answer: Refined Outline"
+            return_value=make_discussion_result(
+                team, {"Arc_Arbitrator": "Refined Outline"}
+            )
         )
 
         outline = self.wf._generate_outline_with_discussion(
@@ -183,6 +189,29 @@ class TestAutonomyToggleGating(unittest.TestCase):
         
         # Run init
         self.wf.initialize_autonomy()
+        self.assertEqual(
+            self.wf.att_manager.config.max_tool_argument_retries,
+            config.MAX_TOOL_ARGUMENT_RETRIES,
+        )
+        self.assertEqual(
+            self.wf.att_manager.config.max_tool_execution_retries,
+            config.MAX_TOOL_EXECUTION_RETRIES,
+        )
+        self.assertEqual(
+            self.wf.att_manager.config.tool_execution_retry_policy,
+            config.TOOL_EXECUTION_RETRY_POLICY,
+        )
+        self.assertEqual(
+            self.wf.att_manager.config.turn_failure_policy.tool,
+            config.TURN_FAILURE_TOOL_POLICY,
+        )
+        self.assertIn("default", self.wf.att_manager.model_configs)
+        self.assertIs(
+            self.wf.att_manager.model_configs["default"][
+                "supports_native_tool_calling"
+            ],
+            False,
+        )
         
         # Force collision: map "gemma4-26b" (or whatever the model name is) to critic_client
         model_key = config.models_section.get("critic_model")
@@ -192,8 +221,24 @@ class TestAutonomyToggleGating(unittest.TestCase):
         handler = mock_register.call_args[0][0]
         
         # 1. Test routing with "planner" keyword in system_instruction
-        asyncio.run(handler(model_name=model_key, prompt="test", system_instruction="You are a Consensus_Planner."))
-        self.wf.planner_client.generate.assert_called_once()
+        tool_marker = object()
+        asyncio.run(
+            handler(
+                model_name=model_key,
+                prompt="test",
+                system_instruction="You are a Consensus_Planner.",
+                tools=[tool_marker],
+                max_output_tokens=456,
+            )
+        )
+        self.wf.planner_client.generate.assert_called_once_with(
+            "test",
+            system_instruction="You are a Consensus_Planner.",
+            temperature=0.3,
+            require_json=False,
+            tools=[tool_marker],
+            max_output_tokens=456,
+        )
         self.wf.critic_client.generate.assert_not_called()
         
         self.wf.planner_client.generate.reset_mock()
@@ -207,6 +252,21 @@ class TestAutonomyToggleGating(unittest.TestCase):
         
         # 3. Test routing with no keywords (should fall back to model_name, which is critic_client due to collision)
         asyncio.run(handler(model_name=model_key, prompt="test", system_instruction="Hello World."))
+        self.wf.critic_client.generate.assert_called_once()
+
+        # 4. Provider TypeError is propagated once; it is not retried without
+        # generation options (which used to silently remove native tools).
+        self.wf.critic_client.generate.reset_mock()
+        self.wf.critic_client.generate.side_effect = TypeError("provider rejected request")
+        with self.assertRaises(TypeError):
+            asyncio.run(
+                handler(
+                    model_name=model_key,
+                    prompt="test",
+                    system_instruction="Hello World.",
+                    tools=[tool_marker],
+                )
+            )
         self.wf.critic_client.generate.assert_called_once()
 
     def test_autonomous_query_toggle_controls_custom_att_tools(self):

@@ -38,7 +38,8 @@ class CliBootstrapTests(unittest.TestCase):
             os.path.join(ROOT_DIR, "i18n"),
             os.path.join(self.tmpdir, "i18n"),
         )
-        with open(os.path.join(self.tmpdir, "config.yaml"), "w", encoding="utf-8") as handle:
+        self.config_path = os.path.join(self.tmpdir, "config.yaml")
+        with open(self.config_path, "w", encoding="utf-8") as handle:
             handle.write(
                 "project:\n"
                 "  language: zh-CN\n"
@@ -53,8 +54,9 @@ class CliBootstrapTests(unittest.TestCase):
             )
         model_dir = os.path.join(self.tmpdir, "config")
         os.makedirs(model_dir)
+        self.model_config_path = os.path.join(model_dir, "ai_model_config.yaml")
         with open(
-            os.path.join(model_dir, "ai_model_config.yaml"),
+            self.model_config_path,
             "w",
             encoding="utf-8",
         ) as handle:
@@ -102,6 +104,44 @@ class CliBootstrapTests(unittest.TestCase):
     def test_language_guard_defaults_are_language_aware(self):
         self.assertEqual(config.language_guard_defaults("zh-CN"), (0.70, 0.30))
         self.assertEqual(config.language_guard_defaults("en"), (0.60, 0.10))
+
+    def test_native_tool_capability_rejects_quoted_boolean(self):
+        with open(self.model_config_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "disabled-model:\n"
+                "  model_type: llm\n"
+                "  api_type: openai\n"
+                "  model_name: enabled-model\n"
+                "  supports_native_tool_calling: \"true\"\n"
+                "  enabled: true\n"
+            )
+        result = self._run("--plan", "1")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 2, output)
+        self.assertIn("supports_native_tool_calling", output)
+        self.assertIn("布尔值", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_att_retry_counts_reject_non_integer_yaml_values(self):
+        with open(self.model_config_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "disabled-model:\n"
+                "  model_type: llm\n"
+                "  api_type: openai\n"
+                "  model_name: enabled-model\n"
+                "  supports_native_tool_calling: false\n"
+                "  enabled: true\n"
+            )
+        with open(self.config_path, "a", encoding="utf-8") as handle:
+            handle.write(
+                "autonomy:\n"
+                "  max_tool_argument_retries: 1.5\n"
+            )
+        result = self._run("--plan", "1")
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 2, output)
+        self.assertIn("非负整数", output)
+        self.assertNotIn("Traceback", output)
 
 
 if __name__ == "__main__":

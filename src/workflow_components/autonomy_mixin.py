@@ -1,13 +1,24 @@
-import logging
+import asyncio
 import os
 import sqlite3
 from typing import Dict, Any, Optional, Tuple, List, Union
 
 import config
-from ai_team_team import ATTManager, Agent, ATTConfig, GatedFileReader
-from ai_team_team.core import ManagerDefaultClientAdapter
+from att.compat import (
+    ATTConfig,
+    ATTManager,
+    Agent,
+    GatedFileReader,
+    ManagerDefaultClientAdapter,
+    TurnFailurePolicyConfig,
+)
 from att.db_committee import DatabaseManagementCommittee
-from att.runtime import close_att_manager, run_att_async, run_team_discussion
+from att.runtime import (
+    close_att_manager,
+    run_att_async,
+    run_team_discussion,
+    select_designated_answer,
+)
 from llm_client import LLMClient
 from workflow_components.resources import get_ai_resource, get_message
 
@@ -68,6 +79,20 @@ class AutonomyWorkflowMixin:
 
         # 1. Build configuration object
         enable_autonomy = getattr(config, "ENABLE_AUTONOMY_SUITE", True)
+        att_workspace_root = getattr(self, "_att_workspace_root", None)
+        if att_workspace_root is None:
+            if getattr(config, "is_testing", False):
+                # Every real ATT test assigns ATT_STATE_DB_PATH inside its own
+                # temporary directory. Keep managed document libraries beside
+                # that isolated state and let the test's normal rmtree clean it.
+                att_workspace_root = os.path.dirname(
+                    os.path.abspath(config.ATT_STATE_DB_PATH)
+                )
+            else:
+                att_workspace_root = os.path.dirname(
+                    os.path.abspath(config.DB_PATH)
+                )
+
         config_obj = ATTConfig(
             enable_dynamic_delegation=getattr(config, "ENABLE_DYNAMIC_DELEGATION", False) if enable_autonomy else False,
             max_delegation_depth=getattr(config, "MAX_DELEGATION_DEPTH", 2),
@@ -83,7 +108,26 @@ class AutonomyWorkflowMixin:
             emergency_discussion_rounds=getattr(config, "EMERGENCY_DISCUSSION_ROUNDS", 1),
             tool_calling_mode=getattr(config, "TOOL_CALLING_MODE", "auto"),
             max_tool_rounds=getattr(config, "MAX_TOOL_ROUNDS", 5),
-            workspace_root=os.path.dirname(os.path.abspath(config.DB_PATH))
+            max_tool_argument_retries=getattr(
+                config, "MAX_TOOL_ARGUMENT_RETRIES", 3
+            ),
+            max_tool_execution_retries=getattr(
+                config, "MAX_TOOL_EXECUTION_RETRIES", 2
+            ),
+            tool_execution_retry_policy=getattr(
+                config, "TOOL_EXECUTION_RETRY_POLICY", "never"
+            ),
+            tool_execution_retry_backoff_factor=getattr(
+                config, "TOOL_EXECUTION_RETRY_BACKOFF_FACTOR", 0.5
+            ),
+            text_tool_schema_mode=getattr(
+                config, "TEXT_TOOL_SCHEMA_MODE", "compact"
+            ),
+            turn_failure_policy=TurnFailurePolicyConfig(
+                tool=getattr(config, "TURN_FAILURE_TOOL_POLICY", "isolate"),
+                llm=getattr(config, "TURN_FAILURE_LLM_POLICY", "isolate"),
+            ),
+            workspace_root=att_workspace_root,
         )
 
         # 2. Instantiate root agent and ATTManager
@@ -119,10 +163,12 @@ class AutonomyWorkflowMixin:
             model_name: str,
             prompt: Union[str, List[Dict[str, Any]]],
             system_instruction: Optional[str] = None,
+            tools: Optional[List[Any]] = None,
+            max_output_tokens: Optional[int] = None,
             temperature: float = 0.3,
             require_json: bool = False,
             **generation_options: Any,
-        ) -> str:
+        ) -> Any:
             client = None
             instr = (system_instruction or "").lower()
             if instr:
@@ -185,14 +231,15 @@ class AutonomyWorkflowMixin:
                 kwargs["temperature"] = temperature
             if "require_json" in sig.parameters or has_var_keyword:
                 kwargs["require_json"] = require_json
+            if "tools" in sig.parameters or has_var_keyword:
+                kwargs["tools"] = tools
+            if "max_output_tokens" in sig.parameters or has_var_keyword:
+                kwargs["max_output_tokens"] = max_output_tokens
             for name, value in generation_options.items():
                 if name in sig.parameters or has_var_keyword:
                     kwargs[name] = value
-            
-            try:
-                return client.generate(prompt, **kwargs)
-            except TypeError:
-                return client.generate(prompt)
+
+            return await asyncio.to_thread(client.generate, prompt, **kwargs)
 
         self.att_manager.register_generator_handler(generator_handler)
         self.att_manager.root_ai.llm_client = ManagerDefaultClientAdapter(
@@ -206,6 +253,10 @@ class AutonomyWorkflowMixin:
         # Refresh model metadata after restoration so configuration changes apply.
         for key, model_info in config.MODEL_REGISTRY.items():
             self.att_manager.register_model(key, model_info)
+        default_key = config.models_section.get("default_model")
+        default_info = config.MODEL_REGISTRY.get(default_key)
+        if default_info:
+            self.att_manager.register_model("default", default_info)
 
         # 3. Register custom presets
         PRESETS = {
@@ -403,8 +454,26 @@ class AutonomyWorkflowMixin:
             team.chapter_num = chapter_num
         return team
 
-    def _execute_att_discussion(self, team: Any, prompt: str, rounds: int) -> str:
+    def _execute_att_discussion(self, team: Any, prompt: str, rounds: int):
         return run_team_discussion(self.att_manager, team, prompt, rounds)
+
+    def _select_att_committee_answer(
+        self,
+        result: Any,
+        team: Any,
+        member_name: str,
+        committee: str,
+    ) -> str:
+        policy = getattr(config, "COMMITTEE_PARTIAL_POLICIES", {}).get(
+            committee, "reject"
+        )
+        return select_designated_answer(
+            result,
+            team,
+            member_name,
+            committee,
+            policy,
+        )
 
     def _audit_database_batch(
         self,

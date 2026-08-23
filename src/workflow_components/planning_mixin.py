@@ -5,7 +5,6 @@ from typing import Dict, Optional
 import config
 from llm_client import LLMClientError
 from workflow_components.resources import get_ai_resource, get_message
-from workflow_components.parsing import extract_att_member_answer
 
 class PlanningWorkflowMixin:
     def _refine_chapter_guide_with_discussion(self, chapter_num: int, guide: str, prompts: Dict[str, str]) -> str:
@@ -25,10 +24,12 @@ class PlanningWorkflowMixin:
         )
 
         try:
-            transcript = self._execute_att_discussion(team, prompt, rounds)
-            final_guide = (
-                extract_att_member_answer(transcript, team, "Reviewer_Arbitrator")
-                or guide
+            discussion_result = self._execute_att_discussion(team, prompt, rounds)
+            final_guide = self._select_att_committee_answer(
+                discussion_result,
+                team,
+                "Reviewer_Arbitrator",
+                "planning",
             )
                 
             self._append_structured_discussion(
@@ -41,6 +42,7 @@ class PlanningWorkflowMixin:
                 decision="guide_finalized",
                 needs_revision=False,
                 artifact_paths=[self.get_guide_path(chapter_num)],
+                att_result=discussion_result,
             )
             return final_guide
         except Exception as e:

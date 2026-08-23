@@ -87,7 +87,8 @@ if is_testing:
             "api_key": "dummy",
             "base_url": "",
             "model_name": "gemini-3.5-flash",
-            "ai_note": "Mock model for testing"
+            "ai_note": "Mock model for testing",
+            "supports_native_tool_calling": False,
         }
     }
     
@@ -152,6 +153,14 @@ else:
         if not model_name:
             model_name = key
         ai_note = str(model_info.get("ai_note", "No description")).strip()
+        supports_native = model_info.get("supports_native_tool_calling", False)
+        if not isinstance(supports_native, bool):
+            raise ConfigurationError(
+                _config_message(
+                    "config.native_tool_boolean",
+                    model=key,
+                )
+            )
 
         resolved_api_key = _resolve_config_field(raw_api_key, "api_key", api_type)
         resolved_base_url = _resolve_config_field(raw_base_url, "base_url", api_type)
@@ -163,6 +172,7 @@ else:
             "base_url": resolved_base_url,
             "model_name": model_name,
             "ai_note": ai_note,
+            "supports_native_tool_calling": supports_native,
         }
 
     # 5. Resolve configured roles
@@ -348,3 +358,87 @@ ENABLE_EMERGENCY_WAKEUP = bool(_get("autonomy", "enable_emergency_wakeup", True)
 EMERGENCY_DISCUSSION_ROUNDS = int(_get("autonomy", "emergency_discussion_rounds", 1))
 TOOL_CALLING_MODE = str(_get("autonomy", "tool_calling_mode", "auto"))
 MAX_TOOL_ROUNDS = int(_get("autonomy", "max_tool_rounds", 5))
+_max_tool_argument_retries = _get("autonomy", "max_tool_argument_retries", 3)
+_max_tool_execution_retries = _get("autonomy", "max_tool_execution_retries", 2)
+if (
+    isinstance(_max_tool_argument_retries, bool)
+    or not isinstance(_max_tool_argument_retries, int)
+    or isinstance(_max_tool_execution_retries, bool)
+    or not isinstance(_max_tool_execution_retries, int)
+):
+    raise ConfigurationError(_config_message("config.att_retry_nonnegative"))
+MAX_TOOL_ARGUMENT_RETRIES = _max_tool_argument_retries
+MAX_TOOL_EXECUTION_RETRIES = _max_tool_execution_retries
+TOOL_EXECUTION_RETRY_POLICY = str(
+    _get("autonomy", "tool_execution_retry_policy", "never")
+).strip().lower()
+_tool_execution_retry_backoff_factor = _get(
+    "autonomy", "tool_execution_retry_backoff_factor", 0.5
+)
+if isinstance(_tool_execution_retry_backoff_factor, bool) or not isinstance(
+    _tool_execution_retry_backoff_factor, (int, float)
+):
+    raise ConfigurationError(_config_message("config.att_backoff_nonnegative"))
+TOOL_EXECUTION_RETRY_BACKOFF_FACTOR = float(
+    _tool_execution_retry_backoff_factor
+)
+TEXT_TOOL_SCHEMA_MODE = str(
+    _get("autonomy", "text_tool_schema_mode", "compact")
+).strip().lower()
+_turn_failure_policy = _get("autonomy", "turn_failure_policy", {})
+if not isinstance(_turn_failure_policy, dict):
+    raise ConfigurationError(_config_message("config.att_turn_failure_mapping"))
+TURN_FAILURE_TOOL_POLICY = str(
+    _turn_failure_policy.get("tool", "isolate")
+).strip().lower()
+TURN_FAILURE_LLM_POLICY = str(
+    _turn_failure_policy.get("llm", "isolate")
+).strip().lower()
+
+if MAX_TOOL_ARGUMENT_RETRIES < 0 or MAX_TOOL_EXECUTION_RETRIES < 0:
+    raise ConfigurationError(_config_message("config.att_retry_nonnegative"))
+if TOOL_EXECUTION_RETRY_POLICY not in {"never", "retry_safe", "typed_transient"}:
+    raise ConfigurationError(_config_message("config.att_execution_retry_policy"))
+if TOOL_EXECUTION_RETRY_BACKOFF_FACTOR < 0:
+    raise ConfigurationError(_config_message("config.att_backoff_nonnegative"))
+if TEXT_TOOL_SCHEMA_MODE not in {"compact", "full", "compact_with_examples"}:
+    raise ConfigurationError(_config_message("config.att_schema_mode"))
+if TURN_FAILURE_TOOL_POLICY not in {"isolate", "abort"}:
+    raise ConfigurationError(
+        _config_message("config.att_turn_failure_policy", key="tool")
+    )
+if TURN_FAILURE_LLM_POLICY not in {"isolate", "abort"}:
+    raise ConfigurationError(
+        _config_message("config.att_turn_failure_policy", key="llm")
+    )
+
+COMMITTEE_PARTIAL_POLICIES = {
+    "world_bible": "accept_designated_member",
+    "plot_outline": "accept_designated_member",
+    "planning": "accept_designated_member",
+    "editorial": "accept_designated_member",
+    "conflict_resolution": "reject",
+    "database_management": "reject",
+}
+_configured_partial_policies = _get(
+    "autonomy", "committee_partial_policies", {}
+)
+if not isinstance(_configured_partial_policies, dict):
+    raise ConfigurationError(_config_message("config.committee_partial_mapping"))
+for _committee_name, _partial_policy in _configured_partial_policies.items():
+    if _committee_name not in COMMITTEE_PARTIAL_POLICIES:
+        raise ConfigurationError(
+            _config_message(
+                "config.committee_partial_unknown",
+                committee=_committee_name,
+            )
+        )
+    _normalized_partial_policy = str(_partial_policy).strip().lower()
+    if _normalized_partial_policy not in {"reject", "accept_designated_member"}:
+        raise ConfigurationError(
+            _config_message(
+                "config.committee_partial_policy",
+                committee=_committee_name,
+            )
+        )
+    COMMITTEE_PARTIAL_POLICIES[_committee_name] = _normalized_partial_policy

@@ -1,54 +1,8 @@
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from workflow_components.resources import get_message
-
-
-def extract_att_member_answer(
-    transcript: str,
-    team: Any,
-    member_name: str,
-    *,
-    strip_final_label: bool = True,
-) -> Optional[str]:
-    """Return the final response written by one designated ATT member.
-
-    ATT may suffix duplicate member names.  We therefore match the configured
-    name and any ``<name>_*`` variant, then take that member's last response.
-    """
-
-    members = list(getattr(team, "members", []) or [])
-    all_names = [str(getattr(member, "name", "")) for member in members]
-    all_names = [name for name in all_names if name]
-    target_names = [
-        name
-        for name in all_names
-        if name == member_name or name.startswith(f"{member_name}_")
-    ]
-    if not target_names:
-        target_names = [member_name]
-
-    line_prefix = re.compile(
-        rf"(?m)^({'|'.join(re.escape(name) for name in all_names or target_names)}):\s*"
-    )
-    matches = list(line_prefix.finditer(transcript or ""))
-    for index in range(len(matches) - 1, -1, -1):
-        match = matches[index]
-        if match.group(1) not in target_names:
-            continue
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(transcript)
-        answer = transcript[match.end() : end].strip()
-        if strip_final_label:
-            answer = re.sub(
-                r"^\s*Final\s+Answer\s*:\s*",
-                "",
-                answer,
-                count=1,
-                flags=re.IGNORECASE,
-            ).strip()
-        return answer or None
-    return None
 
 def contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))

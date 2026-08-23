@@ -5,7 +5,6 @@ import logging
 from typing import Dict, Optional, List
 
 import config
-from workflow_components.parsing import extract_att_member_answer
 from workflow_components.resources import get_ai_resource, get_message
 
 
@@ -70,9 +69,13 @@ class ConflictResolverWorkflowMixin:
 
         # 3. Bounded Debate Loop
         try:
-            transcript_text = self._execute_att_discussion(team, prompt, rounds)
-            planner_answer = extract_att_member_answer(
-                transcript_text, team, "Consensus_Planner"
+            discussion_result = self._execute_att_discussion(team, prompt, rounds)
+            transcript_text = discussion_result.transcript
+            planner_answer = self._select_att_committee_answer(
+                discussion_result,
+                team,
+                "Consensus_Planner",
+                "conflict_resolution",
             )
             planner_decision = self._extract_json(planner_answer or "")
         except Exception as e:

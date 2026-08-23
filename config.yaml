@@ -105,3 +105,20 @@ autonomy:
   emergency_discussion_rounds: 1        # Rounds of debate for emergency wake-ups
   tool_calling_mode: "auto"             # Tool strategy: "text_react", "native", or "auto"
   max_tool_rounds: 5                    # Max reasoning loop steps for native parallel execution
+  max_tool_argument_retries: 3          # Model correction opportunities after an invalid tool call
+  max_tool_execution_retries: 2         # Extra attempts for explicitly retryable tool failures
+  tool_execution_retry_policy: "never"  # "never", "retry_safe", or "typed_transient"
+  tool_execution_retry_backoff_factor: 0.5
+  text_tool_schema_mode: "compact"       # "compact", "full", or "compact_with_examples"
+  turn_failure_policy:
+    tool: "isolate"                     # "isolate" one member or "abort" the discussion
+    llm: "isolate"
+  # A partial creative committee result is usable only when its designated
+  # arbitrator completed the final round. Governance committees fail closed.
+  committee_partial_policies:
+    world_bible: "accept_designated_member"
+    plot_outline: "accept_designated_member"
+    planning: "accept_designated_member"
+    editorial: "accept_designated_member"
+    conflict_resolution: "reject"
+    database_management: "reject"

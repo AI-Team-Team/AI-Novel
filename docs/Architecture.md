@@ -282,8 +282,16 @@ The entire autonomy framework is highly modular and can be fully enabled/disable
 * `emergency_discussion_rounds`: Number of debate rounds for emergency wakeups.
 * `tool_calling_mode`: Selection of tool calling strategy (`"text_react"`, `"native"`, or `"auto"`).
 * `max_tool_rounds`: Step cap for native parallel tool call executions.
+* `max_tool_argument_retries`: Bounded repair attempts for invalid tool arguments.
+* `max_tool_execution_retries` and `tool_execution_retry_policy`: Explicit, idempotency-aware execution replay controls.
+* `turn_failure_policy`: Independent isolation or discussion-abort behavior for tool and LLM failures.
+* `committee_partial_policies`: Per-committee acceptance rules for ATT `partial` results.
 
 ATT persistence is restored from `autonomy.state_db_path` through the current asynchronous ATT state API. AI-Novel requests a full snapshot during orderly shutdown so agents, teams, messages, and agreements remain mutually consistent.
+
+AI-Novel consumes ATT's structured discussion contract rather than reparsing human-readable transcripts. Workflow decisions are selected from the designated member's completed final-round `AgentTurnResult`. Creative committees may accept a partial result under explicit policy; governance committees reject it by default. The structured discussion index retains the ATT discussion identifier, completion status, and operational status for later audit.
+
+In `auto` tool mode, ATT receives a strict per-model `supports_native_tool_calling` boolean. Native-capable OpenAI-compatible and Gemini adapters translate ATT `Tool.json_schema` objects to provider declarations and translate provider calls back to `LLMResponse`/`ToolCall`; all other endpoints use ATT's text ReAct fallback. Provider message translation removes ATT-only persistence metadata before dispatch. Gemini parallel function responses are grouped into one user content containing multiple response parts, while OpenAI tool messages retain only the provider-defined role, content, and call identifier.
 
 ## Commit Replay Recovery
 

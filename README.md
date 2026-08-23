@@ -227,7 +227,15 @@ database_audit:
 
 autonomy:
   state_db_path: "novel/process/att_state_v6.db"
+  tool_calling_mode: "auto"
+  max_tool_rounds: 5
+  committee_partial_policies:
+    editorial: "accept_designated_member"
+    conflict_resolution: "reject"
+    database_management: "reject"
 ```
+
+Provider-native tools are opt-in per entry in `config/ai_model_config.yaml` with the YAML boolean `supports_native_tool_calling: true`. Leave it `false` for endpoints that require ATT's text ReAct fallback.
 
 ## 🚀 Execution Guide
 
