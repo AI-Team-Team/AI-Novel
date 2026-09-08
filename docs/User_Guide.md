@@ -6,7 +6,7 @@ This guide will walk you through setting up and using the AI Novel project to ge
 
 ### Prerequisites
 
-* **Python 3.10+**: Ensure you have a modern Python environment.
+* **Python 3.11+**: Ensure you have a modern Python environment.
 * **LLM API Access**: You need either a **Google Gemini** API key or an **OpenAI-compatible** local/cloud endpoint.
 * **Embedding Service**: The project requires an embedding model (e.g., OpenAI's `text-embedding-3-small` or a local service running `nomic-embed-text`).
 
@@ -170,8 +170,21 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Failure Isolation*: Selects `"isolate"` or `"abort"` independently for tool failures and LLM failures.
 * **`committee_partial_policies`**
   * *Partial Discussion Decisions*: Creative committees may accept a partial discussion only when their designated arbitrator completed the final round. Conflict resolution and database governance reject partial discussions by default.
-* **`state_db_path: "novel/process/att_state_v6.db"`**
-  * *ATT State Store*: Restores the current ATT agent/team state on startup and writes a full, internally consistent snapshot during orderly shutdown.
+* **`state_db_path: "novel/process/att_state_v7.db"`**
+  * *ATT State Store*: Restores the current ATT agent/team state on startup and writes a full, internally consistent schema 7 snapshot during orderly shutdown. Schema 6 is not migrated in place: the old file remains untouched, and the configured v7 path is used separately. Current `config.yaml` values override persisted ATT configuration after a restore.
+* **`episodic_memory.enabled: false`**
+  * *Selective Episodic Memory*: Opt-in ATT memory for committee Agents. Enabling it requires SQLite FTS5 and causes extra model calls to label memory segments. History created while it is disabled is not indexed retroactively.
+  * With memory enabled, each localized committee role has one durable Agent identity. The same identity is reused across chapters, distinct teams, Database Management Committee sessions, and orderly restarts. Recall remains scoped to that Agent, while source team, discussion, and chapter provenance is preserved.
+* **`episodic_memory.segment_boundary: "agent_turn"`**
+  * *Segmentation*: ATT schema 7 currently accepts only `agent_turn`.
+* **`episodic_memory.index_max_retries: 2`**, **`index_retry_backoff_factor: 0.5`**, and **`index_worker_count: 2`**
+  * *Indexer Reliability*: Control retry count, exponential backoff, and concurrent indexing workers. AI-Novel flushes prior indexing before starting a new committee discussion; durable failures are logged without replacing an otherwise valid discussion result. Unfinished work is persisted as recoverable `pending` work during orderly shutdown.
+* **`episodic_memory.max_search_results: 20`**, **`max_recall_lines: 100`**, **`max_recall_chars: 20000`**, and **`max_recall_tokens: 4000`**
+  * *Recall Bounds*: Limit search candidates and the line, character, and estimated token size injected into a model request.
+* **`episodic_memory.max_tags_per_card: 12`** and **`max_retained_context_items: 20`**
+  * *Memory Bounds*: Limit labels attached to each card and retained source context.
+* **`episodic_memory.tool_capture`**
+  * *Tool Privacy Boundary*: Configures `query_sqlite`, `search_faiss`, `read_file_chunk`, and `read_file_tail` independently. `metadata_only` stores invocation metadata but excludes returned content from recallable history. `content` explicitly permits returned database, vector-search, or file content to be remembered by the calling Agent. All four default to `metadata_only`.
 
 Native tool calling is an explicit per-model capability. Set `supports_native_tool_calling: true` in `config/ai_model_config.yaml` only for an endpoint that actually supports provider-native function calling. Missing values and `false` select text ReAct in `auto` mode; quoted strings such as `"true"` are rejected because the field must be a YAML boolean. AI-Novel preserves provider tool schemas, structured tool calls, tool-result messages, Unicode and nested JSON arguments, and output-token limits across the ATT adapter boundary.
 

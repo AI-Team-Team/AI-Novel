@@ -24,3 +24,11 @@ Any resolved issues should not be stored in this document.
 1. Add schema-migration preflight backup/verification command before major version bumps.
 2. Add an optional AI-assisted language guard that can judge mixed-language prose contextually before deterministic rewrite fallback.
 3. Introduce weighted ontology-assisted contradiction scoring for multilingual rules/events.
+4. Add a localized human-management CLI for ATT schema 7 identities and episodic memory:
+   * List durable Agent identities with memory and indexing statistics.
+   * List index failures in human-readable or JSON form, with Agent/status filters.
+   * Retry one failed or pending segment, or retry all eligible segments, with an explicit per-segment report.
+   * Page through the system history for a selected Agent without truncating provenance.
+   * Restore a selected forgotten memory only after explicit confirmation; never offer an implicit bulk restore.
+   * Define stable filter arguments and exit codes for empty results, invalid input, partial failure, and complete success.
+   * Keep all human output in `i18n/messages/`; read-only commands must not initialize workflow models or make model calls.

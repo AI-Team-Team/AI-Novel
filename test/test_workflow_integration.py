@@ -208,6 +208,47 @@ class WorkflowLifecycleIntegrationTests(unittest.TestCase):
         self.assertIn("brass lantern", context["semantic_summary"])
 
 
+class WorkflowConstructionTests(unittest.TestCase):
+    def test_autonomy_startup_failure_closes_open_story_database(self):
+        startup_error = RuntimeError("simulated ATT startup failure")
+        with (
+            mock.patch("workflow.LLMClient"),
+            mock.patch("workflow.MemoryManager") as memory_class,
+            mock.patch.object(
+                WorkflowManager,
+                "initialize_autonomy",
+                side_effect=startup_error,
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                WorkflowManager()
+
+        self.assertIs(raised.exception, startup_error)
+        memory_class.return_value.close.assert_called_once_with()
+
+    def test_cleanup_failure_does_not_mask_autonomy_startup_error(self):
+        startup_error = RuntimeError("simulated ATT startup failure")
+        with (
+            mock.patch("workflow.LLMClient"),
+            mock.patch("workflow.MemoryManager") as memory_class,
+            mock.patch.object(
+                WorkflowManager,
+                "initialize_autonomy",
+                side_effect=startup_error,
+            ),
+            mock.patch("workflow.get_message", return_value="cleanup failed"),
+        ):
+            memory_class.return_value.close.side_effect = RuntimeError(
+                "simulated cleanup failure"
+            )
+            with self.assertLogs("WorkflowManager", level="WARNING"):
+                with self.assertRaises(RuntimeError) as raised:
+                    WorkflowManager()
+
+        self.assertIs(raised.exception, startup_error)
+        memory_class.return_value.close.assert_called_once_with()
+
+
 class ATTCurrentAPIIntegrationTests(unittest.TestCase):
     def test_discussion_close_and_restore_use_current_att_contract(self):
         tmpdir = tempfile.mkdtemp(prefix="ai_novel_att_api_")

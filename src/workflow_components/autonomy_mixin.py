@@ -9,18 +9,23 @@ from att.compat import (
     ATTConfig,
     ATTManager,
     Agent,
+    EpisodicMemoryConfig,
     GatedFileReader,
+    HandlerClientAdapter,
     ManagerDefaultClientAdapter,
     TurnFailurePolicyConfig,
 )
 from att.db_committee import DatabaseManagementCommittee
 from att.runtime import (
+    ATTEventLoopRunner,
     close_att_manager,
     run_att_async,
+    run_att_sync,
     run_team_discussion,
     select_designated_answer,
 )
 from llm_client import LLMClient
+from workflow_components.bootstrap_messages import ConfigurationError
 from workflow_components.resources import get_ai_resource, get_message
 
 class AutonomyWorkflowMixin:
@@ -30,7 +35,40 @@ class AutonomyWorkflowMixin:
     topology routing and tool execution.
     """
     def initialize_autonomy(self):
+        """Initialize ATT transactionally on one persistent event loop."""
+
+        self._att_runner = ATTEventLoopRunner()
+        self.att_manager = None
+        try:
+            self._initialize_autonomy_impl()
+        except BaseException:
+            manager = getattr(self, "att_manager", None)
+            runner = getattr(self, "_att_runner", None)
+            try:
+                if manager is not None and not getattr(manager, "_closed", False):
+                    run_att_async(lambda: manager.close(), runner)
+            except BaseException:
+                pass
+            finally:
+                if runner is not None:
+                    runner.close()
+                self.att_manager = None
+                self._att_runner = None
+            raise
+
+    def _initialize_autonomy_impl(self):
         """Initializes the ATT core manager, gated reader, and DB committee."""
+        if getattr(config, "EPISODIC_MEMORY_ENABLED", False):
+            try:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    connection.execute(
+                        "CREATE VIRTUAL TABLE att_memory_fts_check USING fts5(value)"
+                    )
+            except sqlite3.OperationalError as exc:
+                raise ConfigurationError(
+                    get_message("config.att_fts5_required")
+                ) from exc
+
         self.gated_reader = GatedFileReader(
             large_threshold_kb=getattr(config, "LARGE_FILE_THRESHOLD_KB", 50),
             max_chunk=getattr(config, "MAX_CHUNK_LINES", 100)
@@ -128,6 +166,9 @@ class AutonomyWorkflowMixin:
                 tool=getattr(config, "TURN_FAILURE_TOOL_POLICY", "isolate"),
                 llm=getattr(config, "TURN_FAILURE_LLM_POLICY", "isolate"),
             ),
+            episodic_memory=EpisodicMemoryConfig(
+                **getattr(config, "EPISODIC_MEMORY_SETTINGS", {"enabled": False})
+            ),
             workspace_root=att_workspace_root,
         )
 
@@ -139,10 +180,17 @@ class AutonomyWorkflowMixin:
         att_db_path = getattr(
             config,
             "ATT_STATE_DB_PATH",
-            os.path.join(config.PROCESS_DIR, "att_state_v6.db"),
+            os.path.join(config.PROCESS_DIR, "att_state_v7.db"),
         )
         restore_existing = os.path.exists(att_db_path) and os.path.getsize(att_db_path) > 0
-        self.att_manager = ATTManager(root_ai=root_agent, config=config_obj, db_path=att_db_path)
+        self.att_manager = run_att_sync(
+            lambda: ATTManager(
+                root_ai=root_agent,
+                config=config_obj,
+                db_path=att_db_path,
+            ),
+            self._att_runner,
+        )
 
         # Cache LLM Client mapping by registered model config name and by simple role name
         self.llm_clients = {
@@ -242,22 +290,50 @@ class AutonomyWorkflowMixin:
 
             return await asyncio.to_thread(client.generate, prompt, **kwargs)
 
-        self.att_manager.register_generator_handler(generator_handler)
-        self.att_manager.root_ai.llm_client = ManagerDefaultClientAdapter(
-            self.att_manager
-        )
-        self.att_manager.root_ai._model_alias = "default"
+        def bind_runtime_before_restore() -> None:
+            self.att_manager.register_generator_handler(generator_handler)
+            self.att_manager.root_ai.llm_client = ManagerDefaultClientAdapter(
+                self.att_manager
+            )
+
+        run_att_sync(bind_runtime_before_restore, self._att_runner)
+
+        def apply_runtime_configuration() -> None:
+            # AI-Novel's config.yaml remains authoritative over persisted ATTConfig.
+            self.att_manager.config = config_obj
+            self.att_manager.register_generator_handler(generator_handler)
+            self.att_manager.root_ai.llm_client = ManagerDefaultClientAdapter(
+                self.att_manager
+            )
+            for key, model_info in config.MODEL_REGISTRY.items():
+                self.att_manager.register_model(key, model_info)
+            default_key = config.models_section.get("default_model")
+            default_info = config.MODEL_REGISTRY.get(default_key)
+            if default_info:
+                self.att_manager.register_model("default", default_info)
 
         if restore_existing:
-            run_att_async(lambda: self.att_manager.load_state(att_db_path))
+            async def restore_and_apply_current_configuration() -> None:
+                await self.att_manager.load_state(att_db_path)
+                # load_state schedules pending memory work at its final boundary.
+                # Override the restored config before yielding to those workers.
+                apply_runtime_configuration()
 
-        # Refresh model metadata after restoration so configuration changes apply.
-        for key, model_info in config.MODEL_REGISTRY.items():
-            self.att_manager.register_model(key, model_info)
-        default_key = config.models_section.get("default_model")
-        default_info = config.MODEL_REGISTRY.get(default_key)
-        if default_info:
-            self.att_manager.register_model("default", default_info)
+            try:
+                run_att_async(
+                    restore_and_apply_current_configuration,
+                    self._att_runner,
+                )
+            except Exception as exc:
+                raise ConfigurationError(
+                    get_message(
+                        "config.att_state_restore_failed",
+                        path=att_db_path,
+                        error=exc,
+                    )
+                ) from exc
+        else:
+            run_att_sync(apply_runtime_configuration, self._att_runner)
 
         # 3. Register custom presets
         PRESETS = {
@@ -316,16 +392,100 @@ class AutonomyWorkflowMixin:
                 ],
             },
         }
-        for name, preset_data in PRESETS.items():
-            self.att_manager.register_preset(
-                name=name,
-                description=preset_data["description"],
-                system_instructions=preset_data["system_instructions"],
-                roles=preset_data["roles"]
-            )
+        def register_presets_and_stable_agents() -> Dict[str, str]:
+            for name, preset_data in PRESETS.items():
+                self.att_manager.register_preset(
+                    name=name,
+                    description=preset_data["description"],
+                    system_instructions=preset_data["system_instructions"],
+                    roles=preset_data["roles"],
+                )
+
+            if not getattr(config, "EPISODIC_MEMORY_ENABLED", False):
+                return {}
+
+            role_specs: Dict[str, Tuple[str, str]] = {}
+            for preset_data in PRESETS.values():
+                for role_name, role_description in preset_data["roles"]:
+                    model_alias = self.att_roles_and_models.get(role_name)
+                    if not model_alias:
+                        raise ConfigurationError(
+                            get_message(
+                                "config.att_stable_role_model_missing",
+                                role=role_name,
+                            )
+                        )
+                    spec = (role_description, model_alias)
+                    previous = role_specs.get(role_name)
+                    if previous is not None:
+                        raise ConfigurationError(
+                            get_message(
+                                "config.att_stable_role_duplicate",
+                                role=role_name,
+                            )
+                        )
+                    role_specs[role_name] = spec
+
+            inactive_names = {
+                agent.name
+                for agent in getattr(self.att_manager, "_agents_by_id", {}).values()
+                if getattr(agent, "lifecycle_state", "active") != "active"
+            }
+            stable_ids: Dict[str, str] = {}
+            for role_name, (role_description, model_alias) in role_specs.items():
+                adapter = HandlerClientAdapter(
+                    model_alias,
+                    self.att_manager.generator_handler,
+                )
+                adapter._supports_native = (
+                    self.att_manager.model_configs.get(model_alias, {}).get(
+                        "supports_native_tool_calling"
+                    )
+                    is True
+                )
+                agent = self.att_manager.agents.get(role_name)
+                if agent is None:
+                    if role_name in inactive_names:
+                        raise ConfigurationError(
+                            get_message(
+                                "config.att_stable_agent_inactive",
+                                role=role_name,
+                            )
+                        )
+                    agent = Agent(
+                        name=role_name,
+                        role=role_description,
+                        llm_client=adapter,
+                    )
+                    self.att_manager.register_agent(agent)
+                elif getattr(agent, "lifecycle_state", "active") != "active":
+                    raise ConfigurationError(
+                        get_message(
+                            "config.att_stable_agent_inactive",
+                            role=role_name,
+                        )
+                    )
+
+                agent.role = role_description
+                agent.role_description = ""
+                agent.llm_client = adapter
+                stable_ids[role_name] = agent.agent_id
+            return stable_ids
+
+        self._att_stable_agent_ids = run_att_sync(
+            register_presets_and_stable_agents,
+            self._att_runner,
+        )
 
         # 4. Establish the 3-AI Database Management Committee
-        self.db_committee = DatabaseManagementCommittee(self.att_manager)
+        self.db_committee = run_att_sync(
+            lambda: DatabaseManagementCommittee(
+                self.att_manager,
+                runner=self._att_runner,
+                stable_agent_ids=self._att_stable_agent_ids,
+            ),
+            self._att_runner,
+        )
         
         # Register the Database Management Committee on MemoryManager safely
         memory = getattr(self, "memory", None)
@@ -333,13 +493,18 @@ class AutonomyWorkflowMixin:
             memory.set_db_committee(self.db_committee)
 
         # 5. Register the centralized tools context
-        self.att_manager.register_tools_context({
-            "memory": memory,
-            "embedding_client": getattr(self, "embedding_client", None),
-            "gated_reader": self.gated_reader,
-            "att_manager": self.att_manager,
-            "db_committee": self.db_committee
-        })
+        run_att_sync(
+            lambda: self.att_manager.register_tools_context(
+                {
+                    "memory": memory,
+                    "embedding_client": getattr(self, "embedding_client", None),
+                    "gated_reader": self.gated_reader,
+                    "att_manager": self.att_manager,
+                    "db_committee": self.db_committee,
+                }
+            ),
+            self._att_runner,
+        )
 
         # 6. Register custom tools
         def query_sqlite(sql_command: str) -> str:
@@ -402,10 +567,35 @@ class AutonomyWorkflowMixin:
             config, "ENABLE_AUTONOMOUS_QUERIES", False
         )
         if tools_enabled:
-            self.att_manager.register_tool("query_sqlite", get_ai_resource("tool.query_sqlite.description"), query_sqlite)
-            self.att_manager.register_tool("search_faiss", get_ai_resource("tool.search_faiss.description"), search_faiss)
-            self.att_manager.register_tool("read_file_chunk", get_ai_resource("tool.read_chunk.description"), read_file_chunk)
-            self.att_manager.register_tool("read_file_tail", get_ai_resource("tool.read_tail.description"), read_file_tail)
+            capture = getattr(config, "TOOL_MEMORY_CAPTURE_POLICIES", {})
+
+            def register_custom_tools() -> None:
+                self.att_manager.register_tool(
+                    "query_sqlite",
+                    get_ai_resource("tool.query_sqlite.description"),
+                    query_sqlite,
+                    memory_capture=capture.get("query_sqlite", "metadata_only"),
+                )
+                self.att_manager.register_tool(
+                    "search_faiss",
+                    get_ai_resource("tool.search_faiss.description"),
+                    search_faiss,
+                    memory_capture=capture.get("search_faiss", "metadata_only"),
+                )
+                self.att_manager.register_tool(
+                    "read_file_chunk",
+                    get_ai_resource("tool.read_chunk.description"),
+                    read_file_chunk,
+                    memory_capture=capture.get("read_file_chunk", "metadata_only"),
+                )
+                self.att_manager.register_tool(
+                    "read_file_tail",
+                    get_ai_resource("tool.read_tail.description"),
+                    read_file_tail,
+                    memory_capture=capture.get("read_file_tail", "metadata_only"),
+                )
+
+            run_att_sync(register_custom_tools, self._att_runner)
 
         # 7. Register the Tool Auditor hook for query_sqlite
         def audit_sqlite_query(*args, **kwargs) -> Tuple[bool, str]:
@@ -415,13 +605,27 @@ class AutonomyWorkflowMixin:
             return self.db_committee.audit_query(sql_command)
 
         if tools_enabled:
-            self.att_manager.register_tool_auditor("query_sqlite", audit_sqlite_query)
+            run_att_sync(
+                lambda: self.att_manager.register_tool_auditor(
+                    "query_sqlite", audit_sqlite_query
+                ),
+                self._att_runner,
+            )
 
         # 8. Wire status change and activity handlers to update local ConsoleDashboard screen
         dashboard = getattr(self, "dashboard", None)
         if dashboard is not None:
-            self.att_manager.on_status_change = lambda name, status: dashboard.refresh()
-            self.att_manager.on_activity_added = lambda name, act_type, content: dashboard.add_activity(name, act_type, content)
+            def bind_dashboard_callbacks() -> None:
+                self.att_manager.on_status_change = (
+                    lambda name, status: dashboard.refresh()
+                )
+                self.att_manager.on_activity_added = (
+                    lambda name, act_type, content: dashboard.add_activity(
+                        name, act_type, content
+                    )
+                )
+
+            run_att_sync(bind_dashboard_callbacks, self._att_runner)
 
         # 9. Logger callback to write logs to files via DiscussionLogger
         def handle_log_append(team_id, title, content, chapter_num):
@@ -434,31 +638,61 @@ class AutonomyWorkflowMixin:
                 chapter_num=chapter_num,
                 num3_func=num3_func
             )
-        self.att_manager.on_log_append = handle_log_append
+        run_att_sync(
+            lambda: setattr(self.att_manager, "on_log_append", handle_log_append),
+            self._att_runner,
+        )
 
     def _create_att_team(self, preset_name: str, chapter_num: Optional[int] = None):
         """Create a committee using ATT's current explicit role/model routing."""
 
-        preset = self.att_manager.get_preset(preset_name)
-        role_names = [role_name for role_name, _ in preset["roles"]]
-        team = self.att_manager.create_agent_team(
-            creator=self.att_manager.root_ai,
-            member_count=len(role_names),
-            roles_and_presets=preset["roles"],
-            roles_and_models={
-                role_name: self.att_roles_and_models[role_name]
-                for role_name in role_names
-                if role_name in self.att_roles_and_models
-            },
-            preset_name=preset_name,
-            system_instructions=preset["system_instructions"],
-        )
-        if chapter_num is not None:
-            team.chapter_num = chapter_num
-        return team
+        def create_team():
+            preset = self.att_manager.get_preset(preset_name)
+            role_names = [role_name for role_name, _ in preset["roles"]]
+            stable_ids = getattr(self, "_att_stable_agent_ids", {})
+            if getattr(config, "EPISODIC_MEMORY_ENABLED", False):
+                missing = [name for name in role_names if name not in stable_ids]
+                if missing:
+                    raise ConfigurationError(
+                        get_message(
+                            "config.att_stable_role_model_missing",
+                            role=", ".join(missing),
+                        )
+                    )
+                team = self.att_manager.create_agent_team(
+                    creator=self.att_manager.root_ai,
+                    member_count=len(role_names),
+                    existing_member_ids=[stable_ids[name] for name in role_names],
+                    preset_name=preset_name,
+                    system_instructions=preset["system_instructions"],
+                )
+            else:
+                team = self.att_manager.create_agent_team(
+                    creator=self.att_manager.root_ai,
+                    member_count=len(role_names),
+                    roles_and_presets=preset["roles"],
+                    roles_and_models={
+                        role_name: self.att_roles_and_models[role_name]
+                        for role_name in role_names
+                        if role_name in self.att_roles_and_models
+                    },
+                    preset_name=preset_name,
+                    system_instructions=preset["system_instructions"],
+                )
+            if chapter_num is not None:
+                team.chapter_num = chapter_num
+            return team
+
+        return run_att_sync(create_team, getattr(self, "_att_runner", None))
 
     def _execute_att_discussion(self, team: Any, prompt: str, rounds: int):
-        return run_team_discussion(self.att_manager, team, prompt, rounds)
+        return run_team_discussion(
+            self.att_manager,
+            team,
+            prompt,
+            rounds,
+            getattr(self, "_att_runner", None),
+        )
 
     def _select_att_committee_answer(
         self,
@@ -502,7 +736,13 @@ class AutonomyWorkflowMixin:
             )
 
     def close_autonomy(self) -> None:
-        close_att_manager(getattr(self, "att_manager", None))
+        try:
+            close_att_manager(
+                getattr(self, "att_manager", None),
+                getattr(self, "_att_runner", None),
+            )
+        finally:
+            self._att_runner = None
 
     def get_autonomy_tools(self, caller_node: Any) -> Dict[str, Any]:
         """Assembles the tools map bound to a specific AgentTeam or Member."""

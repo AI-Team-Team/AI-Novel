@@ -1,6 +1,7 @@
+import math
 import os
-import sys
 import re
+import sys
 import yaml
 
 from workflow_components.bootstrap_messages import ConfigurationError, get_bootstrap_message
@@ -11,11 +12,11 @@ model_config_dir = os.path.join(project_root, "config")
 model_config_path = os.path.join(model_config_dir, "ai_model_config.yaml")
 
 
-def _config_message(key: str, **kwargs) -> str:
+def _config_message(message_key: str, **kwargs) -> str:
     current_config = globals().get("_cfg", {})
     project = current_config.get("project", {}) if isinstance(current_config, dict) else {}
     language = project.get("language", "en") if isinstance(project, dict) else "en"
-    return get_bootstrap_message(project_root, language, key, **kwargs)
+    return get_bootstrap_message(project_root, language, message_key, **kwargs)
 
 
 def _load_yaml(path: str) -> dict:
@@ -338,7 +339,7 @@ for _scope_name, _failure_policy in _database_audit_failure_policies.items():
 # =============================
 ENABLE_AUTONOMY_SUITE = bool(_get("autonomy", "enable_autonomy_suite", True))
 ATT_STATE_DB_PATH = str(
-    _get("autonomy", "state_db_path", os.path.join(PROCESS_DIR, "att_state_v6.db"))
+    _get("autonomy", "state_db_path", os.path.join(PROCESS_DIR, "att_state_v7.db"))
 )
 ENABLE_AUTONOMOUS_QUERIES = bool(_get("autonomy", "enable_autonomous_queries", False))
 ENABLE_DYNAMIC_DELEGATION = bool(_get("autonomy", "enable_dynamic_delegation", False))
@@ -353,6 +354,125 @@ ENABLE_BUDGET_MONITORING = bool(_get("autonomy", "enable_budget_monitoring", Fal
 TOTAL_TOKEN_BUDGET_USD = float(_get("autonomy", "total_token_budget_usd", 1.00))
 ENABLE_MEMORY_COMPRESSION = bool(_get("autonomy", "enable_memory_compression", True))
 MAX_MEMORY_TURNS = int(_get("autonomy", "max_memory_turns", 20))
+_episodic_memory = _get("autonomy", "episodic_memory", {})
+if not isinstance(_episodic_memory, dict):
+    raise ConfigurationError(_config_message("config.att_episodic_mapping"))
+
+_episodic_defaults = {
+    "enabled": False,
+    "segment_boundary": "agent_turn",
+    "index_max_retries": 2,
+    "index_retry_backoff_factor": 0.5,
+    "index_worker_count": 2,
+    "max_search_results": 20,
+    "max_recall_lines": 100,
+    "max_recall_chars": 20_000,
+    "max_recall_tokens": 4_000,
+    "max_tags_per_card": 12,
+    "max_retained_context_items": 20,
+}
+_episodic_allowed = set(_episodic_defaults) | {"tool_capture"}
+_episodic_unknown = sorted(
+    set(_episodic_memory) - _episodic_allowed,
+    key=str,
+)
+if _episodic_unknown:
+    raise ConfigurationError(
+        _config_message(
+            "config.att_episodic_unknown",
+            keys=", ".join(str(key) for key in _episodic_unknown),
+        )
+    )
+
+_episodic_enabled = _episodic_memory.get("enabled", False)
+if not isinstance(_episodic_enabled, bool):
+    raise ConfigurationError(
+        _config_message("config.att_episodic_boolean", key="enabled")
+    )
+EPISODIC_MEMORY_ENABLED = _episodic_enabled
+
+EPISODIC_MEMORY_SEGMENT_BOUNDARY = _episodic_memory.get(
+    "segment_boundary", "agent_turn"
+)
+if EPISODIC_MEMORY_SEGMENT_BOUNDARY != "agent_turn":
+    raise ConfigurationError(_config_message("config.att_episodic_boundary"))
+
+_episodic_integer_minimums = {
+    "index_max_retries": 0,
+    "index_worker_count": 1,
+    "max_search_results": 1,
+    "max_recall_lines": 1,
+    "max_recall_chars": 1,
+    "max_recall_tokens": 1,
+    "max_tags_per_card": 1,
+    "max_retained_context_items": 1,
+}
+EPISODIC_MEMORY_SETTINGS = {
+    "enabled": EPISODIC_MEMORY_ENABLED,
+    "segment_boundary": EPISODIC_MEMORY_SEGMENT_BOUNDARY,
+}
+for _key, _minimum in _episodic_integer_minimums.items():
+    _value = _episodic_memory.get(_key, _episodic_defaults[_key])
+    if isinstance(_value, bool) or not isinstance(_value, int) or _value < _minimum:
+        raise ConfigurationError(
+            _config_message(
+                "config.att_episodic_integer",
+                key=_key,
+                minimum=_minimum,
+            )
+        )
+    EPISODIC_MEMORY_SETTINGS[_key] = _value
+
+_episodic_backoff = _episodic_memory.get(
+    "index_retry_backoff_factor",
+    _episodic_defaults["index_retry_backoff_factor"],
+)
+if (
+    isinstance(_episodic_backoff, bool)
+    or not isinstance(_episodic_backoff, (int, float))
+    or not math.isfinite(_episodic_backoff)
+    or _episodic_backoff < 0
+):
+    raise ConfigurationError(_config_message("config.att_episodic_backoff"))
+EPISODIC_MEMORY_SETTINGS["index_retry_backoff_factor"] = float(
+    _episodic_backoff
+)
+
+_tool_memory_capture = _episodic_memory.get("tool_capture", {})
+if not isinstance(_tool_memory_capture, dict):
+    raise ConfigurationError(_config_message("config.att_memory_capture_mapping"))
+_capturable_tools = {
+    "query_sqlite",
+    "search_faiss",
+    "read_file_chunk",
+    "read_file_tail",
+}
+_capture_unknown = sorted(
+    set(_tool_memory_capture) - _capturable_tools,
+    key=str,
+)
+if _capture_unknown:
+    raise ConfigurationError(
+        _config_message(
+            "config.att_memory_capture_unknown",
+            keys=", ".join(str(key) for key in _capture_unknown),
+        )
+    )
+TOOL_MEMORY_CAPTURE_POLICIES = {}
+for _tool_name in sorted(_capturable_tools):
+    _capture_policy = _tool_memory_capture.get(_tool_name, "metadata_only")
+    if not isinstance(_capture_policy, str) or _capture_policy not in {
+        "metadata_only",
+        "content",
+    }:
+        raise ConfigurationError(
+            _config_message(
+                "config.att_memory_capture_policy",
+                tool=_tool_name,
+            )
+        )
+    TOOL_MEMORY_CAPTURE_POLICIES[_tool_name] = _capture_policy
+
 FAILOVER_POLICY = str(_get("autonomy", "failover_policy", "auto"))
 ENABLE_EMERGENCY_WAKEUP = bool(_get("autonomy", "enable_emergency_wakeup", True))
 EMERGENCY_DISCUSSION_ROUNDS = int(_get("autonomy", "emergency_discussion_rounds", 1))

@@ -8,7 +8,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import config
 from att.compat import ATTManager
-from att.runtime import run_team_discussion, select_designated_answer
+from att.runtime import (
+    ATTEventLoopRunner,
+    run_att_sync,
+    run_team_discussion,
+    select_designated_answer,
+)
 from workflow_components.parsing import extract_json_payload
 from workflow_components.resources import get_ai_resource, get_message
 
@@ -24,6 +29,8 @@ class DatabaseManagementCommittee:
         scopes: Optional[Dict[str, bool]] = None,
         failure_policy: Optional[str] = None,
         failure_policies: Optional[Dict[str, str]] = None,
+        runner: Optional[ATTEventLoopRunner] = None,
+        stable_agent_ids: Optional[Dict[str, str]] = None,
     ):
         self.manager = att_manager
         self.preset = att_manager.get_preset("database_management")
@@ -51,6 +58,8 @@ class DatabaseManagementCommittee:
         if invalid:
             raise ValueError(get_message("error.database_audit_policy"))
         self.logger = logging.getLogger("DatabaseManagementCommittee")
+        self.runner = runner
+        self.stable_agent_ids = dict(stable_agent_ids or {})
         self._team = None
 
     def should_audit(self, scope: str) -> bool:
@@ -61,26 +70,48 @@ class DatabaseManagementCommittee:
         return policy == "allow", message
 
     def _create_team(self):
+        return run_att_sync(self._create_team_on_runner, self.runner)
+
+    def _create_team_on_runner(self):
         if self._team is not None and not getattr(self.manager, "_closing", False):
             if getattr(self._team, "tools", None) is not None:
                 self._team.tools.clear()
             return self._team
-        for team in getattr(self.manager, "teams", {}).values():
-            if getattr(team, "preset_name", None) == "database_management":
-                self._team = team
-                if getattr(team, "tools", None) is not None:
-                    team.tools.clear()
-                return team
         role_names = [name for name, _ in self.preset["roles"]]
         registry = getattr(self.manager.config, "model_registry", {}) or {}
-        self._team = self.manager.create_agent_team(
-            creator=self.manager.root_ai,
-            member_count=len(role_names),
-            roles_and_presets=self.preset["roles"],
-            roles_and_models={name: registry[name] for name in role_names if registry.get(name)},
-            preset_name="database_management",
-            system_instructions=self.preset["system_instructions"],
-        )
+        if self.stable_agent_ids:
+            expected_ids = {self.stable_agent_ids[name] for name in role_names}
+            for team in getattr(self.manager, "teams", {}).values():
+                if (
+                    getattr(team, "preset_name", None) == "database_management"
+                    and {member.agent_id for member in team.members} == expected_ids
+                ):
+                    self._team = team
+                    if getattr(team, "tools", None) is not None:
+                        team.tools.clear()
+                    return team
+            self._team = self.manager.create_agent_team(
+                creator=self.manager.root_ai,
+                member_count=len(role_names),
+                existing_member_ids=[self.stable_agent_ids[name] for name in role_names],
+                preset_name="database_management",
+                system_instructions=self.preset["system_instructions"],
+            )
+        else:
+            # Without episodic memory, committee Agents are intentionally
+            # session-local; do not revive an older persisted committee team.
+            self._team = self.manager.create_agent_team(
+                creator=self.manager.root_ai,
+                member_count=len(role_names),
+                roles_and_presets=self.preset["roles"],
+                roles_and_models={
+                    name: registry[name]
+                    for name in role_names
+                    if registry.get(name)
+                },
+                preset_name="database_management",
+                system_instructions=self.preset["system_instructions"],
+            )
         # The governance team decides from the submitted full payload. It must
         # not call the governed SQL tool (or delegation tools) and recursively
         # trigger its own auditor while its discussion lock is held.
@@ -107,9 +138,18 @@ class DatabaseManagementCommittee:
             payload=json.dumps(payload, ensure_ascii=False, default=str),
         )
         try:
-            discussion_result = run_team_discussion(
-                self.manager, team, prompt, rounds=1
-            )
+            if self.runner is None:
+                discussion_result = run_team_discussion(
+                    self.manager, team, prompt, rounds=1
+                )
+            else:
+                discussion_result = run_team_discussion(
+                    self.manager,
+                    team,
+                    prompt,
+                    rounds=1,
+                    runner=self.runner,
+                )
             answer = select_designated_answer(
                 discussion_result,
                 team,

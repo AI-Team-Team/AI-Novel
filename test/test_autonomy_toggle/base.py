@@ -37,6 +37,15 @@ class AutonomyTestCase(unittest.TestCase):
         self.old_autonomy_suite = getattr(config, "ENABLE_AUTONOMY_SUITE", True)
         self.old_autonomous_queries = getattr(config, "ENABLE_AUTONOMOUS_QUERIES", True)
         self.old_att_state_path = config.ATT_STATE_DB_PATH
+        self.old_episodic_memory_enabled = getattr(
+            config, "EPISODIC_MEMORY_ENABLED", False
+        )
+        self.old_episodic_memory_settings = dict(
+            getattr(config, "EPISODIC_MEMORY_SETTINGS", {"enabled": False})
+        )
+        self.old_tool_memory_capture = dict(
+            getattr(config, "TOOL_MEMORY_CAPTURE_POLICIES", {})
+        )
         config.ATT_STATE_DB_PATH = os.path.join(self.tmpdir, "att_state.db")
 
         # Create minimal WorkflowManager subclass/instance with mocked clients and logs
@@ -61,5 +70,8 @@ class AutonomyTestCase(unittest.TestCase):
         config.ENABLE_AUTONOMY_SUITE = self.old_autonomy_suite
         config.ENABLE_AUTONOMOUS_QUERIES = self.old_autonomous_queries
         config.ATT_STATE_DB_PATH = self.old_att_state_path
+        config.EPISODIC_MEMORY_ENABLED = self.old_episodic_memory_enabled
+        config.EPISODIC_MEMORY_SETTINGS = self.old_episodic_memory_settings
+        config.TOOL_MEMORY_CAPTURE_POLICIES = self.old_tool_memory_capture
         os.chdir(self.old_cwd)
         shutil.rmtree(self.tmpdir, ignore_errors=True)

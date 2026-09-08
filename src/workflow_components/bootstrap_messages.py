@@ -30,7 +30,7 @@ def load_project_language(project_root: str, default: str = "en") -> str:
 def get_bootstrap_message(
     project_root: str,
     locale: str,
-    key: str,
+    message_key: str,
     **kwargs: Any,
 ) -> str:
     """Return one human message without importing ``config``.
@@ -66,10 +66,10 @@ def get_bootstrap_message(
                     values: Dict[str, Any] = json.loads(handle.read())
             except (OSError, json.JSONDecodeError, TypeError):
                 continue
-            text = values.get(key)
+            text = values.get(message_key)
             if isinstance(text, str):
                 try:
                     return text.format(**kwargs)
                 except KeyError as exc:
-                    return f"RESOURCE_FORMAT_ERROR_{key}_{exc}"
-    return f"MISSING_MESSAGE_{key}"
+                    return f"RESOURCE_FORMAT_ERROR_{message_key}_{exc}"
+    return f"MISSING_MESSAGE_{message_key}"

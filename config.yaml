@@ -85,7 +85,7 @@ database_audit:
 # Experimental AI Autonomy & Delegation
 # ==========================================
 autonomy:
-  state_db_path: "novel/process/att_state_v6.db" # Current ATT persistence schema state
+  state_db_path: "novel/process/att_state_v7.db" # Current ATT persistence schema state
   enable_autonomy_suite: True           # Narrative teams/delegation/tools; DMC may still use ATT core
   enable_autonomous_queries: True       # Global toggle for tool use loops
   enable_dynamic_delegation: True       # Global toggle for spawning subagents
@@ -100,6 +100,27 @@ autonomy:
   total_token_budget_usd: 2.00          # Supervisor termination budget cap per session
   enable_memory_compression: True       # Compress older messages when memory exceeds turns
   max_memory_turns: 20                  # Maximum turns to retain before memory compression
+  # Optional Agent-owned cross-team episodic recall. Disabled by default because
+  # every indexed terminal Agent turn normally adds an isolated model call.
+  episodic_memory:
+    enabled: false
+    segment_boundary: "agent_turn"
+    index_max_retries: 2
+    index_retry_backoff_factor: 0.5
+    index_worker_count: 2
+    max_search_results: 20
+    max_recall_lines: 100
+    max_recall_chars: 20000
+    max_recall_tokens: 4000
+    max_tags_per_card: 12
+    max_retained_context_items: 20
+    # Tool observations are excluded from recall unless content capture is
+    # explicitly enabled per tool. Content capture may persist sensitive data.
+    tool_capture:
+      query_sqlite: "metadata_only"
+      search_faiss: "metadata_only"
+      read_file_chunk: "metadata_only"
+      read_file_tail: "metadata_only"
   failover_policy: "auto"               # Route strategy on client errors ("auto" or "parent")
   enable_emergency_wakeup: True         # Wake up idle parent teams on high-priority anomalies
   emergency_discussion_rounds: 1        # Rounds of debate for emergency wake-ups

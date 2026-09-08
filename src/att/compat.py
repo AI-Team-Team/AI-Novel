@@ -17,12 +17,14 @@ try:
         AgentTurnStatus,
         DiscussionResult,
         DiscussionStatus,
+        EpisodicMemoryConfig,
         GatedFileReader,
         LLMResponse,
+        StateRestoreError,
         ToolCall,
         TurnFailurePolicyConfig,
     )
-    from ai_team_team.core import ManagerDefaultClientAdapter
+    from ai_team_team.core import HandlerClientAdapter, ManagerDefaultClientAdapter
 except (ImportError, AttributeError) as exc:
     raise ConfigurationError(
         get_bootstrap_message(
@@ -40,9 +42,12 @@ __all__ = [
     "AgentTurnStatus",
     "DiscussionResult",
     "DiscussionStatus",
+    "EpisodicMemoryConfig",
     "GatedFileReader",
+    "HandlerClientAdapter",
     "LLMResponse",
     "ManagerDefaultClientAdapter",
+    "StateRestoreError",
     "ToolCall",
     "TurnFailurePolicyConfig",
 ]

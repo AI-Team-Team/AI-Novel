@@ -1,4 +1,5 @@
 from .common import *
+from att.runtime import run_team_discussion
 
 
 class StructuredDiscussionPolicyTests(unittest.TestCase):
@@ -71,3 +72,33 @@ class StructuredDiscussionPolicyTests(unittest.TestCase):
                 "editorial",
                 "unexpected-policy",
             )
+
+    def test_memory_flush_failure_is_diagnostic_not_discussion_failure(self):
+        expected = make_discussion_result(
+            self.team,
+            {"Designated_Arbitrator": "Final"},
+        )
+        manager = SimpleNamespace(
+            config=SimpleNamespace(
+                episodic_memory=SimpleNamespace(enabled=True)
+            ),
+            logger=unittest.mock.MagicMock(),
+            flush_memory_indexing=unittest.mock.AsyncMock(
+                side_effect=RuntimeError("index unavailable")
+            ),
+            list_memory_index_failures=unittest.mock.MagicMock(),
+            execute_team_discussion_detailed=unittest.mock.AsyncMock(
+                return_value=expected
+            ),
+        )
+
+        result = run_team_discussion(manager, self.team, "prompt", rounds=1)
+
+        self.assertIs(result, expected)
+        manager.execute_team_discussion_detailed.assert_awaited_once_with(
+            self.team,
+            "prompt",
+            rounds=1,
+        )
+        manager.list_memory_index_failures.assert_not_called()
+        manager.logger.warning.assert_called_once()

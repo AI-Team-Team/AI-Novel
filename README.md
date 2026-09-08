@@ -14,7 +14,7 @@ Many thanks to Gemini and GPT for their help!
 
 [👉 Project Architecture](docs/Architecture.md) | [👉 Flowchart](docs/Flowchart/README.md) | [👉 User Guide](docs/User_Guide.md) | [👉 Documents](docs/)
 
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](#)
+[![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](#)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE.txt)
 
 ## 🏛️ Writing Workflow
@@ -142,7 +142,7 @@ novel/
 
 ### Prerequisites
 
-* **Python 3.10+**
+* **Python 3.11+**
 * An API key for **Google Gemini** or an **OpenAI-compatible** endpoint.
 * An embedding service (e.g. OpenAI `text-embedding-3-small` or local `nomic-embed-text` server).
 
@@ -226,9 +226,26 @@ database_audit:
     revision_writes: false           # Enable for before/after revision review
 
 autonomy:
-  state_db_path: "novel/process/att_state_v6.db"
+  state_db_path: "novel/process/att_state_v7.db"
   tool_calling_mode: "auto"
   max_tool_rounds: 5
+  episodic_memory:
+    enabled: false
+    segment_boundary: "agent_turn"
+    index_max_retries: 2
+    index_retry_backoff_factor: 0.5
+    index_worker_count: 2
+    max_search_results: 20
+    max_recall_lines: 100
+    max_recall_chars: 20000
+    max_recall_tokens: 4000
+    max_tags_per_card: 12
+    max_retained_context_items: 20
+    tool_capture:
+      query_sqlite: "metadata_only"
+      search_faiss: "metadata_only"
+      read_file_chunk: "metadata_only"
+      read_file_tail: "metadata_only"
   committee_partial_policies:
     editorial: "accept_designated_member"
     conflict_resolution: "reject"
@@ -236,6 +253,10 @@ autonomy:
 ```
 
 Provider-native tools are opt-in per entry in `config/ai_model_config.yaml` with the YAML boolean `supports_native_tool_calling: true`. Leave it `false` for endpoints that require ATT's text ReAct fallback.
+
+ATT selective episodic memory is opt-in and requires SQLite FTS5. When enabled, each committee role keeps one stable Agent identity across teams, chapters, and orderly restarts, so its own indexed memories can be recalled across those boundaries. Indexing performs additional model calls. The four `tool_capture` settings define the privacy boundary for AI-Novel's custom tools: `metadata_only` records invocation metadata without tool output, while `content` permits the returned content to enter that Agent's recallable history. Keep the default unless the database rows, retrieved passages, or file contents are intentionally allowed into episodic memory.
+
+ATT schema 7 state uses `novel/process/att_state_v7.db`. ATT does not migrate schema 6 in place; AI-Novel leaves an existing v6 database untouched and starts from the configured v7 path. After restore, current `config.yaml` model mappings and episodic-memory settings take precedence over values saved in the state database.
 
 ## 🚀 Execution Guide
 

@@ -55,7 +55,22 @@ class WorkflowManager(
         self.ai_resolve_conflicts = False
         self.in_auto_mode = False
         
-        self.initialize_autonomy()
+        try:
+            self.initialize_autonomy()
+        except BaseException:
+            # The constructor has not returned, so the CLI cannot call close().
+            # Release the already-open story database before propagating the
+            # localized ATT/configuration startup failure.
+            try:
+                self.memory.close()
+            except Exception as cleanup_error:
+                self.logger.warning(
+                    get_message(
+                        "runtime.memory_shutdown_failed",
+                        error=cleanup_error,
+                    )
+                )
+            raise
         self.att_manager.discussion_logger = self._discussion_logger()
         
         # Setup get_embedding proxy wrapper for validation
