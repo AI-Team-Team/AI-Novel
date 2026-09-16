@@ -70,7 +70,7 @@ class _EpisodicClient:
 class EpisodicMemoryRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="ai_novel_att_memory_")
-        self.state_path = os.path.join(self.tmpdir, "att_state_v7.db")
+        self.state_path = os.path.join(self.tmpdir, "att_state_v9.db")
         self.runner = ATTEventLoopRunner()
         self.client = _EpisodicClient()
 
@@ -104,7 +104,7 @@ class EpisodicMemoryRuntimeTests(unittest.TestCase):
 
     def _create_team(self, prefix):
         return run_att_sync(
-            lambda: self.manager.create_agent_team(
+            lambda: self.manager.bootstrap_agent_team(
                 self.manager.root_ai,
                 member_configs={
                     f"{prefix}A": {"model": "memory-model"},
@@ -114,6 +114,30 @@ class EpisodicMemoryRuntimeTests(unittest.TestCase):
                 preset_name=f"{prefix.lower()}-team",
             ),
             self.runner,
+        )
+
+    def test_ordinary_existing_member_creation_opens_consent_request(self):
+        from att.compat import TeamFormationRequest
+
+        team_count = run_att_sync(lambda: len(self.manager.teams), self.runner)
+        request = run_att_sync(
+            lambda: self.manager.create_agent_team(
+                self.manager.root_ai,
+                member_configs={
+                    "InviteA": {"model": "memory-model"},
+                    "InviteB": {"model": "memory-model"},
+                },
+                existing_member_ids=[self.shared.agent_id],
+                preset_name="consent-team",
+                team_purpose="Verify ordinary consent semantics.",
+            ),
+            self.runner,
+        )
+
+        self.assertIsInstance(request, TeamFormationRequest)
+        self.assertEqual(
+            run_att_sync(lambda: len(self.manager.teams), self.runner),
+            team_count,
         )
 
     def test_slow_indexer_stays_on_one_loop_and_flushes_on_later_call(self):

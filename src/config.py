@@ -339,7 +339,7 @@ for _scope_name, _failure_policy in _database_audit_failure_policies.items():
 # =============================
 ENABLE_AUTONOMY_SUITE = bool(_get("autonomy", "enable_autonomy_suite", True))
 ATT_STATE_DB_PATH = str(
-    _get("autonomy", "state_db_path", os.path.join(PROCESS_DIR, "att_state_v7.db"))
+    _get("autonomy", "state_db_path", os.path.join(PROCESS_DIR, "att_state_v9.db"))
 )
 ENABLE_AUTONOMOUS_QUERIES = bool(_get("autonomy", "enable_autonomous_queries", False))
 ENABLE_DYNAMIC_DELEGATION = bool(_get("autonomy", "enable_dynamic_delegation", False))
@@ -348,12 +348,53 @@ MIN_SUBAGENT_TEAM_SIZE = int(_get("autonomy", "min_subagent_team_size", 3))
 SUBAGENT_DISCUSSION_ROUNDS = int(_get("autonomy", "subagent_discussion_rounds", 1))
 REACT_MAX_STEPS = int(_get("autonomy", "react_max_steps", 5))
 INBOX_SUMMARIZE_THRESHOLD_CHARS = int(_get("autonomy", "inbox_summarize_threshold_chars", 1500))
-LARGE_FILE_THRESHOLD_KB = int(_get("autonomy", "large_file_threshold_kb", 50))
-MAX_CHUNK_LINES = int(_get("autonomy", "max_chunk_lines", 100))
 ENABLE_BUDGET_MONITORING = bool(_get("autonomy", "enable_budget_monitoring", False))
 TOTAL_TOKEN_BUDGET_USD = float(_get("autonomy", "total_token_budget_usd", 1.00))
 ENABLE_MEMORY_COMPRESSION = bool(_get("autonomy", "enable_memory_compression", True))
 MAX_MEMORY_TURNS = int(_get("autonomy", "max_memory_turns", 20))
+
+FORMATION_DELIBERATION_POLICY = _get(
+    "autonomy", "formation_deliberation_policy", "optional"
+)
+if (
+    not isinstance(FORMATION_DELIBERATION_POLICY, str)
+    or FORMATION_DELIBERATION_POLICY
+    not in {"optional", "required_when_team_scoped"}
+):
+    raise ConfigurationError(_config_message("config.att_formation_policy"))
+
+_file_read = _get("autonomy", "file_read", {})
+if not isinstance(_file_read, dict):
+    raise ConfigurationError(_config_message("config.att_file_read_mapping"))
+_file_read_unknown = sorted(
+    set(_file_read) - {"max_read_tokens", "tokenizer_fallback"},
+    key=str,
+)
+if _file_read_unknown:
+    raise ConfigurationError(
+        _config_message(
+            "config.att_file_read_unknown",
+            keys=", ".join(str(key) for key in _file_read_unknown),
+        )
+    )
+_file_read_max_tokens = _file_read.get("max_read_tokens", 4_000)
+if (
+    isinstance(_file_read_max_tokens, bool)
+    or not isinstance(_file_read_max_tokens, int)
+    or _file_read_max_tokens < 1
+):
+    raise ConfigurationError(_config_message("config.att_file_read_tokens"))
+_file_read_fallback = _file_read.get("tokenizer_fallback", "conservative")
+if (
+    not isinstance(_file_read_fallback, str)
+    or _file_read_fallback not in {"conservative", "strict"}
+):
+    raise ConfigurationError(_config_message("config.att_file_read_fallback"))
+FILE_READ_SETTINGS = {
+    "max_read_tokens": _file_read_max_tokens,
+    "tokenizer_fallback": _file_read_fallback,
+}
+
 _episodic_memory = _get("autonomy", "episodic_memory", {})
 if not isinstance(_episodic_memory, dict):
     raise ConfigurationError(_config_message("config.att_episodic_mapping"))
@@ -445,7 +486,6 @@ _capturable_tools = {
     "query_sqlite",
     "search_faiss",
     "read_file_chunk",
-    "read_file_tail",
 }
 _capture_unknown = sorted(
     set(_tool_memory_capture) - _capturable_tools,

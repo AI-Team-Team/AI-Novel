@@ -241,6 +241,7 @@ The ATT topology is built on a dynamic recursive lineage model:
 * **Level 1 (Child AT)**: Dynamic Agent Teams spawned by Level 0 or its components to handle specialized tasks (e.g., Chapter Planning Committee, World Bible Committee).
 * **Level 2 (Grandchild AT)**: Dynamic sub-teams spawned recursively by Level 1 members to perform micro-validations (e.g., Timeline Auditor, Character status check).
 * **Enforced Team Size**: Every dynamic Agent Team (AT) must contain at least 3 AI members ($N \ge 3$) to guarantee balanced debates.
+* **Formation Consent**: Agent-initiated teams that reuse an existing identity are persistent proposals with revision-scoped invitations and inbox delivery. AI-Novel's fixed committees are host-provisioned topology and therefore use ATT's explicit audited `bootstrap_agent_team()` API.
 
 ### 2. P2P Negotiation & Sibling Routing
 
@@ -286,12 +287,16 @@ The entire autonomy framework is highly modular and can be fully enabled/disable
 * `max_tool_execution_retries` and `tool_execution_retry_policy`: Explicit, idempotency-aware execution replay controls.
 * `turn_failure_policy`: Independent isolation or discussion-abort behavior for tool and LLM failures.
 * `committee_partial_policies`: Per-committee acceptance rules for ATT `partial` results.
+* `formation_deliberation_policy`: Optional or mandatory detached drafting for team-scoped formation proposals.
+* `file_read`: Token budget and conservative/strict counter policy for model-facing file reads.
 
-ATT persistence is restored from `autonomy.state_db_path` through the current asynchronous ATT state API. AI-Novel requests a full snapshot during orderly shutdown so agents, teams, messages, and agreements remain mutually consistent.
+ATT schema 9 persistence is restored from `autonomy.state_db_path` through the current asynchronous ATT state API. AI-Novel requests a full snapshot during orderly shutdown so agents, teams, inboxes, formation records, messages, and agreements remain mutually consistent. Schema 8 and earlier are not migrated or modified.
 
 AI-Novel consumes ATT's structured discussion contract rather than reparsing human-readable transcripts. Workflow decisions are selected from the designated member's completed final-round `AgentTurnResult`. Creative committees may accept a partial result under explicit policy; governance committees reject it by default. The structured discussion index retains the ATT discussion identifier, completion status, and operational status for later audit.
 
 In `auto` tool mode, ATT receives a strict per-model `supports_native_tool_calling` boolean. Native-capable OpenAI-compatible and Gemini adapters translate ATT `Tool.json_schema` objects to provider declarations and translate provider calls back to `LLMResponse`/`ToolCall`; all other endpoints use ATT's text ReAct fallback. Provider message translation removes ATT-only persistence metadata before dispatch. Gemini parallel function responses are grouped into one user content containing multiple response parts, while OpenAI tool messages retain only the provider-defined role, content, and call identifier.
+
+The AI-facing `read_file_chunk` tool uses ATT's asynchronous `FileReadResult` contract. Reads are bounded by decoded content tokens rather than file size or line count, normalize line endings, reject invalid UTF-8, and expose version-bound line/character continuation coordinates. AI-Novel no longer exposes the former tail-reading tool.
 
 ## Commit Replay Recovery
 

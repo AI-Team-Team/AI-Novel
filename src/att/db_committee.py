@@ -78,6 +78,9 @@ class DatabaseManagementCommittee:
                 self._team.tools.clear()
             return self._team
         role_names = [name for name, _ in self.preset["roles"]]
+        team_purpose = self.preset.get("description") or get_ai_resource(
+            "committee.database.description"
+        )
         registry = getattr(self.manager.config, "model_registry", {}) or {}
         if self.stable_agent_ids:
             expected_ids = {self.stable_agent_ids[name] for name in role_names}
@@ -90,12 +93,13 @@ class DatabaseManagementCommittee:
                     if getattr(team, "tools", None) is not None:
                         team.tools.clear()
                     return team
-            self._team = self.manager.create_agent_team(
+            self._team = self.manager.bootstrap_agent_team(
                 creator=self.manager.root_ai,
                 member_count=len(role_names),
                 existing_member_ids=[self.stable_agent_ids[name] for name in role_names],
                 preset_name="database_management",
                 system_instructions=self.preset["system_instructions"],
+                team_purpose=team_purpose,
             )
         else:
             # Without episodic memory, committee Agents are intentionally
@@ -111,6 +115,7 @@ class DatabaseManagementCommittee:
                 },
                 preset_name="database_management",
                 system_instructions=self.preset["system_instructions"],
+                team_purpose=team_purpose,
             )
         # The governance team decides from the submitted full payload. It must
         # not call the governed SQL tool (or delegation tools) and recursively

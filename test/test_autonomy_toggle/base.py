@@ -46,6 +46,12 @@ class AutonomyTestCase(unittest.TestCase):
         self.old_tool_memory_capture = dict(
             getattr(config, "TOOL_MEMORY_CAPTURE_POLICIES", {})
         )
+        self.old_file_read_settings = dict(
+            getattr(config, "FILE_READ_SETTINGS", {})
+        )
+        self.old_formation_policy = getattr(
+            config, "FORMATION_DELIBERATION_POLICY", "optional"
+        )
         config.ATT_STATE_DB_PATH = os.path.join(self.tmpdir, "att_state.db")
 
         # Create minimal WorkflowManager subclass/instance with mocked clients and logs
@@ -73,5 +79,7 @@ class AutonomyTestCase(unittest.TestCase):
         config.EPISODIC_MEMORY_ENABLED = self.old_episodic_memory_enabled
         config.EPISODIC_MEMORY_SETTINGS = self.old_episodic_memory_settings
         config.TOOL_MEMORY_CAPTURE_POLICIES = self.old_tool_memory_capture
+        config.FILE_READ_SETTINGS = self.old_file_read_settings
+        config.FORMATION_DELIBERATION_POLICY = self.old_formation_policy
         os.chdir(self.old_cwd)
         shutil.rmtree(self.tmpdir, ignore_errors=True)

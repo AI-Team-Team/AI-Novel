@@ -144,10 +144,12 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Tool Loop Toggle*: Allows AI agents to run bounded ReAct (Reasoning & Action) loops, autonomously executing SQLite queries, FAISS vector searches, and paginated gated file lookups in the background.
 * **`enable_dynamic_delegation: false`**
   * *Delegation Toggle*: Enables agents to recursively spawn specialized child and grandchild Agent Teams (ATs) to offload research and outline consistency tasks.
-* **`large_file_threshold_kb: 50`**
-  * *Context Protection Limit*: Files larger than this threshold (in KB) will block direct full reads by agents. The system will instead return a structured **File Outline** sample, forcing the agent to paginate.
-* **`max_chunk_lines: 100`**
-  * *Pagination Chunk Cap*: The maximum number of lines returned in a single paginated chunk read. Helps protect the LLM context from log/draft dumps.
+* **`formation_deliberation_policy: "optional"`**
+  * *Formation Governance*: ATT may optionally draft Agent-initiated team proposals before publication. Set `required_when_team_scoped` to require detached deliberation for team-scoped proposals. AI-Novel's fixed workflow committees use ATT's audited trusted-bootstrap path instead of interactive consent.
+* **`file_read.max_read_tokens: 4000`**
+  * *Model-Facing Content Limit*: Bounds decoded content returned by one file-tool call. Partial reads return exact continuation coordinates and an opaque file version.
+* **`file_read.tokenizer_fallback: "conservative"`**
+  * *Counting Policy*: Uses a UTF-8 byte upper bound when no exact counter is available. `strict` rejects the read instead of using an estimate.
 * **`enable_memory_compression: true`**
   * *Memory Compression*: Automatically summarizes early parts of dialogue histories when the turn count exceeds `max_memory_turns` to prevent Out-Of-Memory (OOM) failures and token window pollution.
 * **`max_memory_turns: 20`**
@@ -170,13 +172,13 @@ For complex background research, timeline auditing, and multi-tier logical analy
   * *Failure Isolation*: Selects `"isolate"` or `"abort"` independently for tool failures and LLM failures.
 * **`committee_partial_policies`**
   * *Partial Discussion Decisions*: Creative committees may accept a partial discussion only when their designated arbitrator completed the final round. Conflict resolution and database governance reject partial discussions by default.
-* **`state_db_path: "novel/process/att_state_v7.db"`**
-  * *ATT State Store*: Restores the current ATT agent/team state on startup and writes a full, internally consistent schema 7 snapshot during orderly shutdown. Schema 6 is not migrated in place: the old file remains untouched, and the configured v7 path is used separately. Current `config.yaml` values override persisted ATT configuration after a restore.
+* **`state_db_path: "novel/process/att_state_v9.db"`**
+  * *ATT State Store*: Restores the current ATT agent/team, inbox, formation, and memory state on startup and writes a full schema 9 snapshot during orderly shutdown. Schema 8 and earlier are not migrated in place: old files remain untouched, and the configured v9 path is used separately. Current `config.yaml` values override persisted ATT configuration after a restore.
 * **`episodic_memory.enabled: false`**
   * *Selective Episodic Memory*: Opt-in ATT memory for committee Agents. Enabling it requires SQLite FTS5 and causes extra model calls to label memory segments. History created while it is disabled is not indexed retroactively.
   * With memory enabled, each localized committee role has one durable Agent identity. The same identity is reused across chapters, distinct teams, Database Management Committee sessions, and orderly restarts. Recall remains scoped to that Agent, while source team, discussion, and chapter provenance is preserved.
 * **`episodic_memory.segment_boundary: "agent_turn"`**
-  * *Segmentation*: ATT schema 7 currently accepts only `agent_turn`.
+  * *Segmentation*: ATT schema 9 currently accepts only `agent_turn`.
 * **`episodic_memory.index_max_retries: 2`**, **`index_retry_backoff_factor: 0.5`**, and **`index_worker_count: 2`**
   * *Indexer Reliability*: Control retry count, exponential backoff, and concurrent indexing workers. AI-Novel flushes prior indexing before starting a new committee discussion; durable failures are logged without replacing an otherwise valid discussion result. Unfinished work is persisted as recoverable `pending` work during orderly shutdown.
 * **`episodic_memory.max_search_results: 20`**, **`max_recall_lines: 100`**, **`max_recall_chars: 20000`**, and **`max_recall_tokens: 4000`**
@@ -184,7 +186,9 @@ For complex background research, timeline auditing, and multi-tier logical analy
 * **`episodic_memory.max_tags_per_card: 12`** and **`max_retained_context_items: 20`**
   * *Memory Bounds*: Limit labels attached to each card and retained source context.
 * **`episodic_memory.tool_capture`**
-  * *Tool Privacy Boundary*: Configures `query_sqlite`, `search_faiss`, `read_file_chunk`, and `read_file_tail` independently. `metadata_only` stores invocation metadata but excludes returned content from recallable history. `content` explicitly permits returned database, vector-search, or file content to be remembered by the calling Agent. All four default to `metadata_only`.
+  * *Tool Privacy Boundary*: Configures `query_sqlite`, `search_faiss`, and `read_file_chunk` independently. `metadata_only` stores invocation metadata but excludes returned content from recallable history. `content` explicitly permits returned database, vector-search, or file content to be remembered by the calling Agent. All three default to `metadata_only`.
+
+`read_file_chunk` reads strict UTF-8 text and returns structured JSON containing status, content, token-count metadata, a file version, and continuation coordinates. Continue a partial result with its `next_line`, `next_character`, and `file_version`. The former arbitrary-path tail-reading tool has been removed.
 
 Native tool calling is an explicit per-model capability. Set `supports_native_tool_calling: true` in `config/ai_model_config.yaml` only for an endpoint that actually supports provider-native function calling. Missing values and `false` select text ReAct in `auto` mode; quoted strings such as `"true"` are rejected because the field must be a YAML boolean. AI-Novel preserves provider tool schemas, structured tool calls, tool-result messages, Unicode and nested JSON arguments, and output-token limits across the ATT adapter boundary.
 

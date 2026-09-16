@@ -32,6 +32,14 @@ class GeneratorAndToolTests(AutonomyTestCase):
             config.TURN_FAILURE_TOOL_POLICY,
         )
         self.assertFalse(self.wf.att_manager.config.episodic_memory.enabled)
+        self.assertEqual(
+            self.wf.att_manager.config.file_read.max_read_tokens,
+            config.FILE_READ_SETTINGS["max_read_tokens"],
+        )
+        self.assertEqual(
+            self.wf.att_manager.config.formation_deliberation_policy,
+            config.FORMATION_DELIBERATION_POLICY,
+        )
         self.assertIn("default", self.wf.att_manager.model_configs)
         self.assertIs(
             self.wf.att_manager.model_configs["default"][
@@ -109,7 +117,7 @@ class GeneratorAndToolTests(AutonomyTestCase):
 
         self.wf.initialize_autonomy()
 
-        custom_tools = {"query_sqlite", "search_faiss", "read_file_chunk", "read_file_tail"}
+        custom_tools = {"query_sqlite", "search_faiss", "read_file_chunk"}
         self.assertTrue(custom_tools.isdisjoint(self.wf.att_manager.global_tools))
         self.assertNotIn("query_sqlite", self.wf.att_manager.tool_auditors)
         for preset_name in (
@@ -139,6 +147,24 @@ class GeneratorAndToolTests(AutonomyTestCase):
         self.wf.critic_client = unittest.mock.MagicMock()
         self.wf.scanner_client = unittest.mock.MagicMock()
         self.wf.embedding_client = unittest.mock.MagicMock()
+
+        def governance_response(
+            prompt,
+            system_instruction=None,
+            require_json=False,
+            **kwargs,
+        ):
+            if require_json:
+                return (
+                    '{"approved": true, "is_healthy": true, '
+                    '"reason": "test healthy"}'
+                )
+            return '{"approved": true, "reason": "test approval"}'
+
+        for role in ("architect", "planner", "writer", "critic", "scanner"):
+            getattr(self.wf, f"{role}_client").generate.side_effect = (
+                governance_response
+            )
         config.ENABLE_AUTONOMY_SUITE = True
         config.ENABLE_AUTONOMOUS_QUERIES = True
 
@@ -176,6 +202,20 @@ class GeneratorAndToolTests(AutonomyTestCase):
             self.assertTrue(opened_connections[0].was_closed)
             self.assertEqual(memory.get_schema_meta("att_tool_commit"), "yes")
 
+            from ai_team_team.core.tool_runtime import ToolExecutor
+            from att.runtime import run_att_async
+
+            caller_team = self.wf._create_att_team("planning", 1)
+            audited = run_att_async(
+                lambda: ToolExecutor(
+                    caller_team,
+                    caller_team.members[0],
+                    self.wf.att_manager,
+                ).execute("query_sqlite", args=["SELECT 1"]),
+                self.wf._att_runner,
+            )
+            self.assertIn("1", audited.content)
+
             committee_team = self.wf.db_committee._create_team()
             self.assertEqual(committee_team.tools, {})
         finally:
@@ -196,7 +236,6 @@ class GeneratorAndToolTests(AutonomyTestCase):
             "query_sqlite": "metadata_only",
             "search_faiss": "content",
             "read_file_chunk": "metadata_only",
-            "read_file_tail": "content",
         }
 
         self.wf.initialize_autonomy()
@@ -210,9 +249,121 @@ class GeneratorAndToolTests(AutonomyTestCase):
             "content",
         )
         self.assertEqual(
-            self.wf.att_manager.global_tools["read_file_tail"].memory_capture,
-            "content",
+            self.wf.att_manager.global_tools["read_file_chunk"].memory_capture,
+            "metadata_only",
         )
+        self.assertEqual(
+            set(self.wf.att_manager.global_tools),
+            {"query_sqlite", "search_faiss", "read_file_chunk"},
+        )
+
+    def test_file_chunk_returns_token_bounded_versioned_continuations(self):
+        import asyncio
+        from workflow_components.autonomy_mixin import AutonomyWorkflowMixin
+
+        self.wf.initialize_autonomy = AutonomyWorkflowMixin.initialize_autonomy.__get__(
+            self.wf
+        )
+        for role in ("architect", "planner", "writer", "critic", "scanner"):
+            setattr(self.wf, f"{role}_client", unittest.mock.MagicMock())
+        config.ENABLE_AUTONOMY_SUITE = True
+        config.ENABLE_AUTONOMOUS_QUERIES = True
+        config.FILE_READ_SETTINGS = {
+            "max_read_tokens": 5,
+            "tokenizer_fallback": "conservative",
+        }
+        self.wf.initialize_autonomy()
+
+        path = os.path.join(self.tmpdir, "unicode.txt")
+        source_content = "甲乙\r\n丙丁戊己"
+        content = "甲乙\n丙丁戊己"
+        with open(path, "w", encoding="utf-8", newline="") as stream:
+            stream.write(source_content)
+
+        tool = self.wf.att_manager.global_tools["read_file_chunk"]
+        pieces = []
+        line = 1
+        character = 1
+        version = None
+        while True:
+            result = asyncio.run(
+                tool.invoke(
+                    path,
+                    start_line=line,
+                    start_character=character,
+                    expected_file_version=version,
+                )
+            )
+            pieces.append(result.content)
+            self.assertLessEqual(result.content_token_count, 5)
+            self.assertTrue(result.estimated)
+            self.assertEqual(result.token_count_method, "utf8_bytes_upper_bound")
+            if result.status.value == "complete":
+                break
+            line = result.next_line
+            character = result.next_character
+            version = result.file_version
+
+        self.assertEqual("".join(pieces), content)
+
+    def test_file_chunk_classifies_strict_counter_and_stale_version_errors(self):
+        import asyncio
+        from att.compat import ToolArgumentError, ToolBusinessError
+        from workflow_components.autonomy_mixin import AutonomyWorkflowMixin
+
+        def initialize_reader(fallback):
+            self.wf.initialize_autonomy = (
+                AutonomyWorkflowMixin.initialize_autonomy.__get__(self.wf)
+            )
+            for role in ("architect", "planner", "writer", "critic", "scanner"):
+                setattr(self.wf, f"{role}_client", unittest.mock.MagicMock())
+            config.ENABLE_AUTONOMY_SUITE = True
+            config.ENABLE_AUTONOMOUS_QUERIES = True
+            config.FILE_READ_SETTINGS = {
+                "max_read_tokens": 5,
+                "tokenizer_fallback": fallback,
+            }
+            self.wf.initialize_autonomy()
+
+        path = os.path.join(self.tmpdir, "versioned.txt")
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write("abcdef")
+
+        initialize_reader("strict")
+        strict_tool = self.wf.att_manager.global_tools["read_file_chunk"]
+        with self.assertRaises(ToolBusinessError) as strict_error:
+            asyncio.run(strict_tool.invoke(path))
+        self.assertEqual(
+            strict_error.exception.error_kind, "token_counter_unavailable"
+        )
+        self.wf.close_autonomy()
+
+        initialize_reader("conservative")
+        tool = self.wf.att_manager.global_tools["read_file_chunk"]
+        with self.assertRaises(ToolArgumentError) as range_error:
+            asyncio.run(tool.invoke(path, start_line=0))
+        self.assertEqual(range_error.exception.error_kind, "invalid_file_range")
+
+        invalid_utf8_path = os.path.join(self.tmpdir, "invalid-utf8.txt")
+        with open(invalid_utf8_path, "wb") as stream:
+            stream.write(b"\xff")
+        with self.assertRaises(ToolBusinessError) as decoding_error:
+            asyncio.run(tool.invoke(invalid_utf8_path))
+        self.assertEqual(decoding_error.exception.error_kind, "file_decoding_error")
+
+        first = asyncio.run(tool.invoke(path))
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write("changed")
+        with self.assertRaises(ToolBusinessError) as stale_error:
+            asyncio.run(
+                tool.invoke(
+                    path,
+                    start_line=first.next_line,
+                    start_character=first.next_character,
+                    expected_file_version=first.file_version,
+                )
+            )
+        self.assertEqual(stale_error.exception.error_kind, "file_version_changed")
 
     def test_enabled_episodic_memory_reuses_role_agents_across_teams_and_restore(self):
         from workflow_components.autonomy_mixin import AutonomyWorkflowMixin
@@ -256,6 +407,15 @@ class GeneratorAndToolTests(AutonomyTestCase):
         self.assertNotEqual(team_one.team_id, team_two.team_id)
         self.assertEqual(team_one.chapter_num, 1)
         self.assertEqual(team_two.chapter_num, 2)
+        from att.runtime import run_att_sync
+        event_types = run_att_sync(
+            lambda: {
+                event.event_type
+                for event in first.att_manager._memory.events.values()
+            },
+            first._att_runner,
+        )
+        self.assertIn("trusted_team_bootstrap", event_types)
         first.close_autonomy()
 
         second = new_workflow()
@@ -375,10 +535,24 @@ class GeneratorAndToolTests(AutonomyTestCase):
             **config.EPISODIC_MEMORY_SETTINGS,
             "enabled": True,
         }
+        config.FILE_READ_SETTINGS = {
+            "max_read_tokens": 17,
+            "tokenizer_fallback": "strict",
+        }
+        config.FORMATION_DELIBERATION_POLICY = "required_when_team_scoped"
         second = new_workflow()
         try:
             second.initialize_autonomy()
             self.assertTrue(second.att_manager.config.episodic_memory.enabled)
+            self.assertEqual(second.att_manager.config.file_read.max_read_tokens, 17)
+            self.assertEqual(
+                second.att_manager.config.file_read.tokenizer_fallback,
+                "strict",
+            )
+            self.assertEqual(
+                second.att_manager.config.formation_deliberation_policy,
+                "required_when_team_scoped",
+            )
             self.assertEqual(
                 len(second._att_stable_agent_ids),
                 18,
@@ -483,7 +657,7 @@ class GeneratorAndToolTests(AutonomyTestCase):
         self.assertIsNone(self.wf.att_manager)
         self.assertIsNone(self.wf._att_runner)
 
-    def test_schema_six_state_fails_cleanly_and_stops_runner(self):
+    def test_pre_schema_nine_state_fails_cleanly_and_stops_runner(self):
         from contextlib import closing
         import sqlite3
         from workflow_components.bootstrap_messages import ConfigurationError
@@ -496,8 +670,10 @@ class GeneratorAndToolTests(AutonomyTestCase):
             )
             connection.execute(
                 "INSERT INTO manager_config (config_key, config_value) "
-                "VALUES ('schema_version', '6')"
+                "VALUES ('schema_version', '8')"
             )
+        with open(config.ATT_STATE_DB_PATH, "rb") as stream:
+            original_database = stream.read()
 
         self.wf.initialize_autonomy = AutonomyWorkflowMixin.initialize_autonomy.__get__(
             self.wf
@@ -512,7 +688,7 @@ class GeneratorAndToolTests(AutonomyTestCase):
             with self.assertRaises(ConfigurationError) as ctx:
                 self.wf.initialize_autonomy()
 
-            self.assertIn("schema 7", str(ctx.exception))
+            self.assertIn("schema 9", str(ctx.exception))
             self.assertIn(config.ATT_STATE_DB_PATH, str(ctx.exception))
             self.assertIsNone(self.wf.att_manager)
             self.assertIsNone(self.wf._att_runner)
@@ -522,4 +698,6 @@ class GeneratorAndToolTests(AutonomyTestCase):
                 "SELECT config_value FROM manager_config "
                 "WHERE config_key='schema_version'"
             ).fetchone()[0]
-        self.assertEqual(version, "6")
+        self.assertEqual(version, "8")
+        with open(config.ATT_STATE_DB_PATH, "rb") as stream:
+            self.assertEqual(stream.read(), original_database)

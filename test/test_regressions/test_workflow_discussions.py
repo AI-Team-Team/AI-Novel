@@ -69,6 +69,8 @@ class WorkflowGuideDiscussionTests(unittest.TestCase):
         def generate(self, prompt, system_instruction=None, temperature=0.7, require_json=False, **kwargs):
             if require_json:
                 return '{"is_healthy": true, "reason": "ok"}'
+            if "Supervisory Auditor" in (system_instruction or ""):
+                return "Final Answer: the discussion is healthy."
             if not self.outputs:
                 raise RuntimeError("No output configured")
             return self.outputs.pop(0)
@@ -120,6 +122,8 @@ class WorkflowTextDiscussionTests(unittest.TestCase):
         def generate(self, prompt, system_instruction=None, temperature=0.7, require_json=False, **kwargs):
             if require_json:
                 return '{"is_healthy": true, "reason": "ok"}'
+            if "Supervisory Auditor" in (system_instruction or ""):
+                return "Final Answer: the discussion is healthy."
             if not self.outputs:
                 raise RuntimeError("No output configured")
             return self.outputs.pop(0)

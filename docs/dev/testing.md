@@ -77,6 +77,8 @@ Native adapter tests must verify that `tools` and `max_output_tokens` reach the 
 
 Every real `ATTManager` test must use an isolated `config.ATT_STATE_DB_PATH` and call `close_autonomy()` in cleanup. In test mode, AI-Novel anchors ATT's managed workspace to the temporary state database directory, so `.att_doc_libs/` is removed by the test's normal temporary-directory cleanup. Tests that instantiate `ATTManager` directly must pass that temporary directory as `ATTConfig.workspace_root`. Shutdown writes a full snapshot and releases ATT's single-writer lease.
 
+Tests that provision stable workflow identities must use ATT's audited `bootstrap_agent_team()` path. Ordinary calls that reuse an existing Agent must assert the consent-bearing `TeamFormationRequest` contract. File-tool tests must cover token-bounded structured results, Unicode continuation, stale versions, strict-counter rejection, and the absence of the removed tail tool.
+
 When mocking the shared `critic_client.generate`, observe the following guidelines:
 
 ### A. Bound Debate Loop Rounds

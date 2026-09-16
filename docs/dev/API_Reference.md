@@ -261,24 +261,28 @@ When continuous loops (`--auto`) or the explicit CLI flag `--ai-resolve-conflict
 
 ### `GatedFileReader`
 
-Handles file reading with size-aware boundaries, returning outlines or chunked line paginations.
+Provides ATT's asynchronous, token-bounded reader for model-facing UTF-8 text.
 
 **Constructor:**
 
 ```python
-reader = GatedFileReader(large_threshold_kb: int = 50, max_chunk: int = 100)
+reader = GatedFileReader(
+    max_read_tokens=4000,
+    tokenizer_fallback="conservative",
+    model_alias="ai-novel-file-tool",
+)
 ```
 
-* `large_threshold_kb`: Threshold in kilobytes. Files larger than this will return an outline warning if read directly without pagination.
-* `max_chunk`: Maximum number of lines returned in a single slice read.
+* `max_read_tokens`: Positive content-token budget for each result.
+* `tokenizer_fallback`: `conservative` uses a UTF-8-byte upper bound; `strict` rejects reads without an exact counter.
 
 **Methods:**
 
-* `read_file(path: str, start_line: int = 1, end_line: Optional[int] = None) -> str`
-  * Reads a file. If the file size exceeds the threshold and no `end_line` is specified, it returns a structured fallback warning outlining file details and first 5 lines.
-  * If `end_line` is provided, reads and returns lines within the window (capped at `max_chunk` lines).
-* `read_file_tail(path: str, line_count: int = 50) -> str`
-  * Reads and returns only the last `line_count` lines of a file, suitable for logs or continuous files.
+* `await read_file(path, start_line=1, end_line=None, start_character=1, character_count=None, expected_file_version=None) -> FileReadResult`
+  * Returns raw normalized text plus token-count metadata. A partial result supplies `next_line`, `next_character`, and `file_version` for an exact continuation.
+  * Invalid ranges, non-UTF-8 input, stale versions, and unavailable strict counters are classified rather than returned as successful text.
+
+AI-Novel registers this operation as the `read_file_chunk` tool. It does not register a tail-reading tool.
 
 ## `src.att`
 

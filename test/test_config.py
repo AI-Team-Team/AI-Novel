@@ -171,5 +171,33 @@ disabled-model:
             with self.subTest(expected=expected):
                 self._assert_real_config_error(autonomy_yaml, expected)
 
+    def test_att_file_read_and_formation_config_are_strictly_validated(self):
+        cases = (
+            ("  file_read: []", "autonomy.file_read must be a dictionary"),
+            (
+                "  file_read:\n    unexpected: true",
+                "Unknown autonomy.file_read option",
+            ),
+            (
+                "  file_read:\n    max_read_tokens: true",
+                "max_read_tokens must be a positive integer",
+            ),
+            (
+                "  file_read:\n    max_read_tokens: 0",
+                "max_read_tokens must be a positive integer",
+            ),
+            (
+                "  file_read:\n    tokenizer_fallback: approximate",
+                "tokenizer_fallback must be 'conservative' or 'strict'",
+            ),
+            (
+                "  formation_deliberation_policy: required",
+                "formation_deliberation_policy must be 'optional' or 'required_when_team_scoped'",
+            ),
+        )
+        for autonomy_yaml, expected in cases:
+            with self.subTest(expected=expected):
+                self._assert_real_config_error(autonomy_yaml, expected)
+
 if __name__ == "__main__":
     unittest.main()

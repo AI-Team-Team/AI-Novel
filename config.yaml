@@ -85,7 +85,7 @@ database_audit:
 # Experimental AI Autonomy & Delegation
 # ==========================================
 autonomy:
-  state_db_path: "novel/process/att_state_v7.db" # Current ATT persistence schema state
+  state_db_path: "novel/process/att_state_v9.db" # Current ATT persistence schema state
   enable_autonomy_suite: True           # Narrative teams/delegation/tools; DMC may still use ATT core
   enable_autonomous_queries: True       # Global toggle for tool use loops
   enable_dynamic_delegation: True       # Global toggle for spawning subagents
@@ -94,8 +94,10 @@ autonomy:
   subagent_discussion_rounds: 2         # Discussion rounds inside subagent panels
   react_max_steps: 5                    # Max reasoning loop steps for an agent turn
   inbox_summarize_threshold_chars: 1500 # Threshold to compress cascading inbox alerts
-  large_file_threshold_kb: 50           # Files larger than this return outline warning
-  max_chunk_lines: 200                  # Paginated lines per read request
+  formation_deliberation_policy: "optional" # Or "required_when_team_scoped"
+  file_read:
+    max_read_tokens: 4000               # Maximum decoded content tokens per model-facing read
+    tokenizer_fallback: "conservative"  # "strict" rejects reads without an exact counter
   enable_budget_monitoring: True        # Toggle to enable/disable supervisor budget monitoring
   total_token_budget_usd: 2.00          # Supervisor termination budget cap per session
   enable_memory_compression: True       # Compress older messages when memory exceeds turns
@@ -120,7 +122,6 @@ autonomy:
       query_sqlite: "metadata_only"
       search_faiss: "metadata_only"
       read_file_chunk: "metadata_only"
-      read_file_tail: "metadata_only"
   failover_policy: "auto"               # Route strategy on client errors ("auto" or "parent")
   enable_emergency_wakeup: True         # Wake up idle parent teams on high-priority anomalies
   emergency_discussion_rounds: 1        # Rounds of debate for emergency wake-ups

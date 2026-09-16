@@ -10,9 +10,15 @@ from att.compat import (
     ATTManager,
     Agent,
     EpisodicMemoryConfig,
+    FileReadConfig,
+    FileReadError,
+    FileReadRangeError,
+    FileReadResult,
     GatedFileReader,
     HandlerClientAdapter,
     ManagerDefaultClientAdapter,
+    ToolArgumentError,
+    ToolBusinessError,
     TurnFailurePolicyConfig,
 )
 from att.db_committee import DatabaseManagementCommittee
@@ -70,8 +76,12 @@ class AutonomyWorkflowMixin:
                 ) from exc
 
         self.gated_reader = GatedFileReader(
-            large_threshold_kb=getattr(config, "LARGE_FILE_THRESHOLD_KB", 50),
-            max_chunk=getattr(config, "MAX_CHUNK_LINES", 100)
+            **getattr(
+                config,
+                "FILE_READ_SETTINGS",
+                {"max_read_tokens": 4_000, "tokenizer_fallback": "conservative"},
+            ),
+            model_alias="ai-novel-file-tool",
         )
         
         # 1. Build role-to-model registry mapping role names to config model names
@@ -166,6 +176,19 @@ class AutonomyWorkflowMixin:
                 tool=getattr(config, "TURN_FAILURE_TOOL_POLICY", "isolate"),
                 llm=getattr(config, "TURN_FAILURE_LLM_POLICY", "isolate"),
             ),
+            formation_deliberation_policy=getattr(
+                config, "FORMATION_DELIBERATION_POLICY", "optional"
+            ),
+            file_read=FileReadConfig(
+                **getattr(
+                    config,
+                    "FILE_READ_SETTINGS",
+                    {
+                        "max_read_tokens": 4_000,
+                        "tokenizer_fallback": "conservative",
+                    },
+                )
+            ),
             episodic_memory=EpisodicMemoryConfig(
                 **getattr(config, "EPISODIC_MEMORY_SETTINGS", {"enabled": False})
             ),
@@ -180,7 +203,7 @@ class AutonomyWorkflowMixin:
         att_db_path = getattr(
             config,
             "ATT_STATE_DB_PATH",
-            os.path.join(config.PROCESS_DIR, "att_state_v7.db"),
+            os.path.join(config.PROCESS_DIR, "att_state_v9.db"),
         )
         restore_existing = os.path.exists(att_db_path) and os.path.getsize(att_db_path) > 0
         self.att_manager = run_att_sync(
@@ -545,23 +568,51 @@ class AutonomyWorkflowMixin:
             except Exception as e:
                 return get_ai_resource("tool.faiss_error", error=e)
 
-        def read_file_chunk(path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
-            """Reads a specific paginated chunk of a file. Arguments: path (str), start_line (int), end_line (int)"""
+        async def read_file_chunk(
+            path: str,
+            start_line: int = 1,
+            end_line: Optional[int] = None,
+            start_character: int = 1,
+            character_count: Optional[int] = None,
+            expected_file_version: Optional[str] = None,
+        ) -> FileReadResult:
+            """Read a token-bounded file range with stable continuation coordinates."""
+            error_resources = {
+                "invalid_file_range": "tool.file_chunk.invalid_range",
+                "file_decoding_error": "tool.file_chunk.decoding_error",
+                "file_version_changed": "tool.file_chunk.version_changed",
+                "token_counter_unavailable": "tool.file_chunk.counter_unavailable",
+            }
             try:
-                start_line = int(start_line)
-                if end_line is not None:
-                    end_line = int(end_line)
-                return self.gated_reader.read_file(path, start_line, end_line)
-            except Exception as e:
-                return get_ai_resource("tool.file_chunk_error", error=e)
-
-        def read_file_tail(path: str, line_count: int = 50) -> str:
-            """Reads the last line_count lines of a file or log. Arguments: path (str), line_count (int)"""
-            try:
-                line_count = int(line_count)
-                return self.gated_reader.read_file_tail(path, line_count)
-            except Exception as e:
-                return get_ai_resource("tool.file_tail_error", error=e)
+                return await self.gated_reader.read_file(
+                    path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    start_character=start_character,
+                    character_count=character_count,
+                    expected_file_version=expected_file_version,
+                )
+            except FileReadRangeError as exc:
+                raise ToolArgumentError(
+                    get_ai_resource(error_resources[exc.error_kind]),
+                    error_kind=exc.error_kind,
+                ) from exc
+            except FileReadError as exc:
+                raise ToolBusinessError(
+                    get_ai_resource(
+                        error_resources.get(
+                            exc.error_kind,
+                            "tool.file_chunk.unavailable",
+                        ),
+                        path=path,
+                    ),
+                    error_kind=exc.error_kind,
+                ) from exc
+            except OSError as exc:
+                raise ToolBusinessError(
+                    get_ai_resource("tool.file_chunk.unavailable", path=path),
+                    error_kind="file_read_failed",
+                ) from exc
 
         tools_enabled = enable_autonomy and getattr(
             config, "ENABLE_AUTONOMOUS_QUERIES", False
@@ -587,12 +638,6 @@ class AutonomyWorkflowMixin:
                     get_ai_resource("tool.read_chunk.description"),
                     read_file_chunk,
                     memory_capture=capture.get("read_file_chunk", "metadata_only"),
-                )
-                self.att_manager.register_tool(
-                    "read_file_tail",
-                    get_ai_resource("tool.read_tail.description"),
-                    read_file_tail,
-                    memory_capture=capture.get("read_file_tail", "metadata_only"),
                 )
 
             run_att_sync(register_custom_tools, self._att_runner)
@@ -659,12 +704,13 @@ class AutonomyWorkflowMixin:
                             role=", ".join(missing),
                         )
                     )
-                team = self.att_manager.create_agent_team(
+                team = self.att_manager.bootstrap_agent_team(
                     creator=self.att_manager.root_ai,
                     member_count=len(role_names),
                     existing_member_ids=[stable_ids[name] for name in role_names],
                     preset_name=preset_name,
                     system_instructions=preset["system_instructions"],
+                    team_purpose=preset["description"],
                 )
             else:
                 team = self.att_manager.create_agent_team(
@@ -678,6 +724,7 @@ class AutonomyWorkflowMixin:
                     },
                     preset_name=preset_name,
                     system_instructions=preset["system_instructions"],
+                    team_purpose=preset["description"],
                 )
             if chapter_num is not None:
                 team.chapter_num = chapter_num

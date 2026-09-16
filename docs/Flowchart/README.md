@@ -15,4 +15,3 @@ For more granular details on specific system components, please refer to the fol
 3. **[Memory & Retrieval System](Memory_System.md)**: Details how the system extracts facts, manages SQLite/FAISS tiers, and retrieves context.
 4. **[Conflict & Integrity Management](Conflict_Management.md)**: Details the interruption-resume logic and the conflict triage process.
 5. **[System Orchestration Flow](Orchestration.md)**: The comprehensive control flow of the system, covering all CLI commands, continuous generation cycles, and planning states.
-6. **[AI Autonomy & Subagent Delegation Flowcharts](ATT_Autonomy_Suite/README.md)**: Catalog of detailed Mermaid diagrams for dynamic spawning, gated file reading, negotiation brokers, and 3-AI supervisory audits.

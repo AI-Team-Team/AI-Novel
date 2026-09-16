@@ -10,6 +10,7 @@ Any resolved issues should not be stored in this document.
 2. Build consumers for `discussion_index.jsonl` and conflict triage output (analytics/audit dashboards).
 3. Harden auto-mode resume with persistent run checkpoints and retry/backoff metadata (current version already performs strict runtime artifact integrity validation and discard/regenerate).
 4. Add chapter-scope cleanup manifest so interrupted generations can purge generated artifacts and commit traces with stronger determinism.
+5. Define a least-privilege path policy for the AI-facing `read_file_chunk` tool, including approved roots and symlink-escape handling (design is still under consideration).
 
 ## Known Issues
 
@@ -24,7 +25,7 @@ Any resolved issues should not be stored in this document.
 1. Add schema-migration preflight backup/verification command before major version bumps.
 2. Add an optional AI-assisted language guard that can judge mixed-language prose contextually before deterministic rewrite fallback.
 3. Introduce weighted ontology-assisted contradiction scoring for multilingual rules/events.
-4. Add a localized human-management CLI for ATT schema 7 identities and episodic memory:
+4. Add a localized human-management CLI for ATT schema 9 identities and episodic memory:
    * List durable Agent identities with memory and indexing statistics.
    * List index failures in human-readable or JSON form, with Agent/status filters.
    * Retry one failed or pending segment, or retry all eligible segments, with an explicit per-segment report.
