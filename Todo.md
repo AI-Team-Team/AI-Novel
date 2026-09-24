@@ -19,6 +19,9 @@ Any resolved issues should not be stored in this document.
 3. Language guard now has confidence scoring (and excludes known character names), but still uses rewrite fallback as the final correction path.
 4. `ENABLE_BUDGET_MONITORING` and related token limits are defined in config but lack actual implementation in LLM clients, offering no cost circuit breakers.
 5. Critic fact-review failures currently pass the extracted payload through unchanged even though most semantic contradiction checks were removed from the deterministic memory layer; this needs an explicit user-selectable fail-closed, queue-for-review, or fail-open policy.
+6. Empty vector rebuilds can create a FAISS index with the hardcoded 768-dimensional fallback while the current embedding probe saves a different dimension. FAISS/SQLite reconciliation checks counts and IDs but not index dimension versus saved dimension, so it can report healthy and then incorrectly instruct a user of the same model to rebuild again.
+7. Embedding fingerprint validation marks the session verified before the probe and comparison succeed. A failed probe or mismatch can therefore be skipped on the next call in the same process; the current fixed-text vector comparison also reports a changed model without distinguishing backend output drift from an actual model change.
+8. Automatic vector rebuild can commit an empty index when embedding calls temporarily fail: previously active metadata rows become soft-deleted skipped rows, and reconciliation then reports healthy. Preserve the existing searchable index and active rows until a complete or explicitly approved partial rebuild succeeds.
 
 ## Future Plans
 
