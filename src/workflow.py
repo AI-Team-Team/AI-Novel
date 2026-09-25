@@ -4,6 +4,8 @@ import time
 import json
 from typing import Dict, Optional, Tuple, List
 
+import numpy as np
+
 import config
 from llm_client import LLMClient, LLMClientError
 from memory import MemoryManager
@@ -76,59 +78,95 @@ class WorkflowManager(
         # Setup get_embedding proxy wrapper for validation
         original_get_embedding = self.embedding_client.get_embedding
         self.embedding_client._fingerprint_verified = False
-        self.embedding_client._bypass_all_checks = False
         self.embedding_client._original_get_embedding = original_get_embedding
 
         def wrapped_get_embedding(text: str) -> Optional[list]:
-            # A. Bypass all validations during rebuild/migration if flag is set
-            if getattr(self.embedding_client, "_bypass_all_checks", False):
-                return original_get_embedding(text)
-
-            # B. Lazy, single-run validation of the Hello World vector fingerprint
+            # The first successful probe validates this process's embedding backend.
             if not getattr(self.embedding_client, "_fingerprint_verified", False):
-                # Mark as verified immediately to avoid recursive infinite loops
-                self.embedding_client._fingerprint_verified = True
-                
-                hw_vector = original_get_embedding("Hello World!")
-                if hw_vector:
-                    hw_dim = len(hw_vector)
-                    
-                    # 1. Fetch any existing fingerprint and dimension from SQLite schema_meta
-                    existing_fp_json = self.memory.get_schema_meta("embedding_fingerprint")
-                    existing_dim_str = self.memory.get_schema_meta("embedding_dim")
-                    
-                    # 2. Check fingerprint match if exists
-                    if existing_fp_json:
-                        try:
-                            existing_fp = json.loads(existing_fp_json)
-                            import numpy as np
-                            if not np.allclose(hw_vector, existing_fp, atol=1e-5):
-                                raise RuntimeError(get_message("runtime.vector_model_mismatch"))
-                        except (json.JSONDecodeError, TypeError, ValueError) as e:
-                            self.logger.warning(get_message("runtime.embedding_fingerprint_parse", error=e))
-                    else:
-                        # Initialize SQLite schema_meta fingerprint & dim
-                        self.memory.set_schema_meta("embedding_fingerprint", json.dumps(hw_vector))
-                        self.memory.set_schema_meta("embedding_dim", str(hw_dim))
-                        self.memory.embedding_dim = hw_dim
-                        
-                    # 3. Check dimension match if exists
-                    if existing_dim_str:
-                        try:
-                            existing_dim = int(existing_dim_str)
-                            if hw_dim != existing_dim:
-                                raise RuntimeError(get_message("runtime.vector_dim_mismatch", expected=existing_dim, actual=hw_dim))
-                        except (ValueError, TypeError):
-                            pass
-                    else:
-                        self.memory.set_schema_meta("embedding_dim", str(hw_dim))
-                        self.memory.embedding_dim = hw_dim
+                hw_vector = self._validated_embedding_probe(original_get_embedding)
+                hw_dim = len(hw_vector)
+                existing_fp_json = self.memory.get_schema_meta("embedding_fingerprint")
+                existing_dim_str = self.memory.get_schema_meta("embedding_dim")
 
-            # C. Fetch vector for target text
+                if existing_fp_json is not None:
+                    try:
+                        existing_fp = np.asarray(
+                            json.loads(existing_fp_json), dtype=np.float64
+                        )
+                        if (
+                            existing_fp.ndim != 1
+                            or existing_fp.size == 0
+                            or not np.isfinite(existing_fp).all()
+                            or np.any(np.abs(existing_fp) > np.finfo(np.float32).max)
+                        ):
+                            raise ValueError("invalid fingerprint shape or values")
+                    except (json.JSONDecodeError, TypeError, ValueError, OverflowError) as exc:
+                        raise RuntimeError(
+                            get_message("runtime.embedding_fingerprint_invalid")
+                        ) from exc
+                    if existing_fp.size != hw_dim:
+                        raise RuntimeError(
+                            get_message(
+                                "runtime.vector_dim_mismatch",
+                                expected=existing_fp.size,
+                                actual=hw_dim,
+                            )
+                        )
+                    if not np.allclose(hw_vector, existing_fp, atol=1e-5):
+                        raise RuntimeError(get_message("runtime.vector_model_mismatch"))
+
+                if existing_dim_str is not None:
+                    try:
+                        existing_dim = int(existing_dim_str)
+                        if existing_dim < 1:
+                            raise ValueError("non-positive dimension")
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(
+                            get_message("runtime.embedding_dimension_invalid")
+                        ) from exc
+                    if hw_dim != existing_dim:
+                        raise RuntimeError(
+                            get_message(
+                                "runtime.vector_dim_mismatch",
+                                expected=existing_dim,
+                                actual=hw_dim,
+                            )
+                        )
+                if self.memory.index is not None and self.memory.index.d != hw_dim:
+                    raise RuntimeError(
+                        get_message(
+                            "runtime.vector_dim_mismatch",
+                            expected=self.memory.index.d,
+                            actual=hw_dim,
+                        )
+                    )
+
+                if existing_fp_json is None:
+                    self.memory.set_schema_meta(
+                        "embedding_fingerprint", json.dumps(hw_vector)
+                    )
+                if existing_dim_str is None:
+                    self.memory.set_schema_meta("embedding_dim", str(hw_dim))
+                self.memory.embedding_dim = hw_dim
+                self.embedding_client._fingerprint_verified = True
+
             vector = original_get_embedding(text)
-            
-            # D. Verify dimension on EVERY returned vector (local, inexpensive check)
-            if vector:
+
+            # Every returned vector must fit the index used for retrieval.
+            if vector is not None:
+                try:
+                    checked_vector = np.asarray(vector, dtype=np.float64)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise RuntimeError(
+                        get_message("runtime.embedding_vector_invalid")
+                    ) from exc
+                if (
+                    checked_vector.ndim != 1
+                    or checked_vector.size == 0
+                    or not np.isfinite(checked_vector).all()
+                    or np.any(np.abs(checked_vector) > np.finfo(np.float32).max)
+                ):
+                    raise RuntimeError(get_message("runtime.embedding_vector_invalid"))
                 expected_dim = None
                 if self.memory.index is not None:
                     expected_dim = self.memory.index.d
@@ -142,9 +180,16 @@ class WorkflowManager(
                 if expected_dim is None:
                     expected_dim = self.memory.embedding_dim
                 
-                if expected_dim is not None and len(vector) != expected_dim:
-                    raise RuntimeError(get_message("runtime.vector_dim_mismatch", expected=expected_dim, actual=len(vector)))
-            return vector
+                if expected_dim is not None and checked_vector.size != expected_dim:
+                    raise RuntimeError(
+                        get_message(
+                            "runtime.vector_dim_mismatch",
+                            expected=expected_dim,
+                            actual=checked_vector.size,
+                        )
+                    )
+                return checked_vector.tolist()
+            return None
 
         self.embedding_client.get_embedding = wrapped_get_embedding
 
@@ -200,7 +245,7 @@ class WorkflowManager(
                 "active_metadata_count": active_count,
                 "index_total": 0,
                 "load_error": None,
-                "reasons": ["active metadata exists without a loaded index"],
+                "reasons": [get_message("runtime.faiss_reason_missing_index")],
             }
         self.vector_health = health
         if faiss is not None and self.vector_health["requires_rebuild"]:
@@ -208,8 +253,23 @@ class WorkflowManager(
             try:
                 self.rebuild_vector_index()
                 self.vector_health = self.memory.reconcile_vector_store()
+                if isinstance(self.vector_health, dict) and self.vector_health["requires_rebuild"]:
+                    raise RuntimeError(
+                        get_message(
+                            "runtime.faiss_rebuild_unhealthy",
+                            reasons="; ".join(self.vector_health["reasons"]),
+                        )
+                    )
             except Exception as e:
-                self.logger.error(get_message("runtime.faiss_rebuild_failed", error=e))
+                message = get_message("runtime.faiss_rebuild_failed", error=e)
+                self.logger.error(message)
+                try:
+                    self.close()
+                except Exception as cleanup_error:
+                    self.logger.warning(
+                        get_message("runtime.memory_shutdown_failed", error=cleanup_error)
+                    )
+                raise RuntimeError(message) from e
 
     def close(self) -> None:
         """Flush ATT state and close the story database deterministically."""
@@ -668,24 +728,41 @@ class WorkflowManager(
             return False
 
     def rebuild_vector_index(self) -> Dict[str, object]:
-        # Bypass all checks during rebuild
-        self.embedding_client._bypass_all_checks = True
+        self.embedding_client._fingerprint_verified = False
+        original_get_embedding = getattr(
+            self.embedding_client,
+            "_original_get_embedding",
+            self.embedding_client.get_embedding,
+        )
+        fingerprint = self._validated_embedding_probe(original_get_embedding)
+        stats = self.memory.rebuild_vector_index_from_metadata(
+            original_get_embedding,
+            target_dim=len(fingerprint),
+            fingerprint=fingerprint,
+        )
+        self.embedding_client._fingerprint_verified = True
+        return stats
+
+    @staticmethod
+    def _validated_embedding_probe(embedding_fn) -> List[float]:
+        """Obtain a usable model vector before changing any vector-store state."""
+        raw_vector = embedding_fn("Hello World!")
+        if raw_vector is None:
+            raise RuntimeError(get_message("runtime.embedding_probe_unavailable"))
         try:
-            stats = self.memory.rebuild_vector_index_from_metadata(self.embedding_client.get_embedding)
-            
-            # Post-rebuild: overwrite fingerprint and dimension in SQLite schema_meta with the new model's values
-            original_get_embedding = getattr(self.embedding_client, "_original_get_embedding", self.embedding_client.get_embedding)
-            hw_vector = original_get_embedding("Hello World!")
-            if hw_vector:
-                new_dim = len(hw_vector)
-                self.memory.set_schema_meta("embedding_fingerprint", json.dumps(hw_vector))
-                self.memory.set_schema_meta("embedding_dim", str(new_dim))
-                self.memory.embedding_dim = new_dim
-                
-            return stats
-        finally:
-            self.embedding_client._bypass_all_checks = False
-            self.embedding_client._fingerprint_verified = True # Re-mark as verified since we just updated
+            vector = np.asarray(raw_vector, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(
+                get_message("runtime.embedding_probe_invalid")
+            ) from exc
+        if (
+            vector.ndim != 1
+            or vector.size == 0
+            or not np.isfinite(vector).all()
+            or np.any(np.abs(vector) > np.finfo(np.float32).max)
+        ):
+            raise RuntimeError(get_message("runtime.embedding_probe_invalid"))
+        return vector.tolist()
 
     def run_with_dashboard(self, func, *args, **kwargs):
         """Runs the specified workflow function inside the ConsoleDashboard context."""

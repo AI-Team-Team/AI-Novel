@@ -1,126 +1,121 @@
 # Dynamic Embedding Dimension & Fingerprint Validation System
 
-This design document outlines the architecture, mechanisms, and implementation of the **Dynamic Embedding Dimension and Fingerprint Validation System** in the AI-Novel generator.
+This design document describes how AI-Novel discovers embedding dimensions, checks provider output against an existing vector store, and rebuilds FAISS without silently losing searchable facts.
 
 ## 1. Context & Motivation
 
-In previous iterations, the embedding model dimension was explicitly defined in configuration files (e.g., `dim: 768`). This presented several core limitations and risks:
+Earlier versions required an embedding dimension in configuration (for example, `dim: 768`). This created three problems:
 
-1. **Redundancy & Mismatch Risk**: The user had to manually specify the dimension, introducing potential friction if they switched models but forgot to update the parameter.
-2. **FAISS Index Corruption**: If a user switched the active embedding model on an existing project database (e.g., swapping a 768-dimensional model for a 1536-dimensional model, or a different model with the same dimensions but different semantic space) without rebuilding, the FAISS index would become corrupted or yield garbage semantic search results.
-3. **Resource Waste**: Checking the embedding model fingerprint on every single API call would require a roundtrip network request to embed a validation payload (e.g., `"Hello World!"`), which wastes tokens, consumes credits, and introduces significant latency.
+1. **Redundancy and mismatch risk:** A user changing models also had to update a separate dimension setting.
+2. **Incompatible vector spaces:** A new model may produce a different dimension, or different vectors at the same dimension. Either case can make an existing FAISS index unusable or its results misleading.
+3. **Validation cost:** Embedding a fixed probe before every request would add provider calls, latency, and possibly charges.
 
-To address these concerns, this system introduces a **decoupled configuration, dynamic autodetection, lazy single-run fingerprinting, and zero-cost local dimension checking** approach.
+The design therefore combines dimension autodetection, a lazy fixed-text fingerprint check once per process, validation of every returned vector, and a separately controlled rebuild. The fingerprint can detect materially changed output; it does **not** prove which model produced that output. Backend drift can also change it.
 
 ## 2. System Architecture & Component Interaction
 
-The validation system uses a **Proxy Pattern** around the `LLMClient`'s embedding interface, coordinating with `MemoryManager` (SQLite) and `FAISS` to enforce validation rules.
+`WorkflowManager` wraps the embedding `LLMClient.get_embedding` method. `MemoryManager` owns SQLite metadata and the FAISS index. SQLite records the confirmed dimension and fingerprint; the loaded FAISS index has its own actual dimension. Startup reconciliation compares these rather than assuming either is correct by itself.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CLI as CLI/WorkflowManager
-    participant Wrapper as Proxy Wrapper
-    participant Client as LLMClient (Embedding)
+    participant Workflow as WorkflowManager
+    participant Wrapper as Embedding wrapper
+    participant Client as LLMClient (embedding)
     participant Memory as MemoryManager (SQLite + FAISS)
-    participant Provider as Embedding API (Gemini/OpenAI)
+    participant Provider as Embedding provider
 
-    CLI->>Memory: Initialize MemoryManager (config.DB_PATH, config.FAISS_INDEX_PATH)
-    Memory->>Memory: Load stored "embedding_dim" from SQLite schema_meta
-    Memory->>Memory: Load .faiss file (overrides dim if present)
-    
-    CLI->>Wrapper: Call wrapped_get_embedding("query text")
-    
-    rect rgb(240, 240, 255)
-        Note over Wrapper, Provider: Section A: First-time process verification (Lazy)
-        Wrapper->>Wrapper: Check if _fingerprint_verified is False
-        Wrapper->>Wrapper: Set _fingerprint_verified = True
-        Wrapper->>Client: Call original get_embedding("Hello World!")
-        Client->>Provider: Request embedding vector for "Hello World!"
-        Provider-->>Client: Return 128-dimensional vector
-        Client-->>Wrapper: Return vector
-        
-        Wrapper->>Memory: Get stored "embedding_fingerprint" & "embedding_dim" from schema_meta
-        
-        alt Fingerprint Exists
-            Wrapper->>Wrapper: Compare using np.allclose(hw_vector, stored_fp, atol=1e-5)
-            Note over Wrapper: If mismatch, raises RuntimeError (exit code 1)
-        else Fingerprint Missing (New DB)
-            Wrapper->>Memory: Save new fingerprint and dimension to schema_meta
+    Workflow->>Memory: Open SQLite and load FAISS
+    Memory->>Memory: Reconcile index load, IDs, tombstones, and saved dimension
+    Note over Workflow,Memory: An unhealthy store triggers a separate rebuild before ordinary calls
+    Workflow->>Wrapper: get_embedding("query text")
+    opt Fingerprint not yet verified in this process
+        Wrapper->>Client: Original get_embedding("Hello World!")
+        Client->>Provider: Request fixed-text probe
+        Provider-->>Client: Probe vector (or no usable vector)
+        Client-->>Wrapper: Probe result
+        alt Missing or invalid probe
+            Wrapper-->>Workflow: Error, leave verification pending
+        else Valid probe
+            Wrapper->>Memory: Read saved fingerprint and dimension
+            Memory-->>Wrapper: Saved values and loaded index dimension
+            alt Fingerprint or dimension mismatch
+                Wrapper-->>Workflow: Error, leave verification pending
+            else Checks pass
+                Wrapper->>Memory: Save missing metadata, if any
+                Wrapper->>Wrapper: Mark fingerprint verified
+            end
         end
     end
-
-    rect rgb(240, 255, 240)
-        Note over Wrapper, Provider: Section B: Fetch & validate dimension (Every call)
-        Wrapper->>Client: Call original get_embedding("query text")
-        Client->>Provider: Request embedding vector
-        Provider-->>Client: Return query vector
-        Client-->>Wrapper: Return vector
-        Wrapper->>Wrapper: Check len(vector) == expected_dim
-        Note over Wrapper: If mismatch, raises RuntimeError (exit code 1)
-    end
-    
-    Wrapper-->>CLI: Return validated embedding vector
+    Note over Wrapper,Workflow: Continue only if verification succeeded or was already complete
+    Wrapper->>Client: Original get_embedding("query text")
+    Client->>Provider: Request target vector
+    Provider-->>Client: Target vector
+    Client-->>Wrapper: Return vector
+    Wrapper->>Wrapper: Check shape, numeric values, float32 range, and dimension
+    Wrapper-->>Workflow: Validated vector (or provider's None)
 ```
+
+The diagram shows the ordinary call path. If startup reconciliation requests a rebuild, `WorkflowManager` probes the provider and runs the rebuild before the first ordinary call.
 
 ## 3. Core Mechanisms
 
-### 3.1. SQLite as the Single Source of Truth
+### 3.1. SQLite Metadata and FAISS Dimension
 
-The configuration yaml files no longer contain any dimension parameters. Instead, `MemoryManager` and the proxy wrapper rely entirely on the SQLite `schema_meta` table.
+Model configuration does not require a dimension. `schema_meta.embedding_dim` stores the confirmed dimension as text. `MemoryManager` reads it when opening SQLite; loading an existing FAISS file sets the in-memory dimension from `index.d`. Reconciliation then checks that the saved and loaded dimensions agree, including for an empty index. Neither a zero vector count nor a default constructor dimension is evidence of the provider's actual dimension.
 
-* **Initialization Flow**:
-  1. `MemoryManager` opens the SQLite database.
-  2. It queries `schema_meta` for `embedding_dim`. If found, `self.embedding_dim` is updated to that integer.
-  3. It initializes the FAISS index. If the `.faiss` file already exists on disk, `self.embedding_dim` is automatically synchronized with the actual dimension of the FAISS index (`self.index.d`).
-* **Dynamic Creation**:
-  If the FAISS index does not exist (new story project), the first time a semantic fact is added via `add_semantic_fact`, the system captures the dimension from the returned embedding and writes it to SQLite `schema_meta` under key `"embedding_dim"`.
+On a new project, the first valid ordinary probe may save a missing dimension and fingerprint. The first semantic write creates a missing FAISS index using its actual vector dimension. An empty rebuild instead requires a validated provider probe (or an explicit `target_dim` from a low-level caller); it must not fall back to 768.
 
 ### 3.2. Lazy Process-Run Fingerprinting
 
-To avoid performing network-expensive model validation on every embedding call, the proxy wrapper uses a lazy verification mechanism:
+1. On startup, `_fingerprint_verified` is `False`.
+2. Before the first ordinary embedding request, the wrapper calls the original client for `"Hello World!"`. A missing, malformed, non-finite, or float32-unrepresentable probe raises a user-facing error and leaves the flag `False`, so another call can retry.
+3. A valid probe is compared with the stored JSON fingerprint using `numpy.allclose(..., atol=1e-5)` and checked against the saved dimension and loaded FAISS dimension. A malformed stored value or mismatch also leaves the flag `False`.
+4. Only after these checks succeed does the wrapper write missing metadata and mark this process verified. Subsequent ordinary calls skip the fixed-text request.
 
-1. **State Flags**: The wrapper defines `self.embedding_client._fingerprint_verified = False` on startup.
-2. **First-Call Interception**: The first time `get_embedding` is invoked in a process session, the validation wrapper intercepts it, locks `_fingerprint_verified = True`, and embeds the string `"Hello World!"`.
-3. **Float-tolerant Comparator**: Embedding vectors returned by remote APIs (such as OpenAI or Gemini) can have microscopic floating-point variations due to remote server optimizations or precision formats. Therefore, the system compares the newly generated fingerprint with the database-stored array using:
-   $$\text{numpy.allclose}(\text{hw\_vector}, \text{existing\_fp}, \text{atol}=10^{-5})$$
-   Strict equality comparisons are avoided to eliminate false alerts.
-4. **Subsequent Bypass**: For all subsequent calls to `get_embedding` in the same execution run, the wrapper sees `_fingerprint_verified == True` and completely skips the `"Hello World!"` network request, saving API token usage and removing overhead.
+The comparison tolerates small numeric differences, but it cannot distinguish a changed model from provider-side output drift. A mismatch calls for inspection of the configured provider and model before deciding to rebuild; it is not an automatic authorization to replace the index.
 
-### 3.3. Continuous Local Dimension Verification
+### 3.3. Continuous Local Vector Validation
 
-While fingerprinting runs once, **dimension validation runs on every call** to `get_embedding`:
+Every non-`None` vector returned by the wrapper must be one-dimensional, nonempty, numeric, finite, representable as FAISS `float32`, and the expected length. The expected dimension comes from the loaded index, then saved SQLite metadata, then the in-memory value. The wrapper returns a normalized list. These checks are local but inspect the vector's elements; they are not a zero-cost length check. Direct `MemoryManager.add_semantic_fact` calls also reject malformed nonempty vectors before writing.
 
-* When a vector is returned, the wrapper checks:
-  $$\text{len(vector)} == \text{expected\_dim}$$
-* The `expected_dim` is fetched dynamically (checking FAISS index shape first, then SQLite `schema_meta`, then internal memory fields).
-* Checking the length of a local list is an $O(1)$ operation in Python with virtually zero memory or CPU cost. It guarantees that any sudden dimension mismatch (e.g., mid-run reconfiguration or server updates) is immediately caught before committing garbage shapes to the FAISS index.
+If the provider returns `None` for a read-only semantic query, retrieval can continue without that search. If it returns no embedding for a semantic detail during a fact-write batch, the write raises an error so the caller can roll back and retry rather than silently omitting the detail.
 
-### 3.4. Safe Migration Flow (Rebuilding Vectors)
+### 3.4. Startup Reconciliation
 
-If a user legitimately decides to switch embedding models, a standard run will block them with a model mismatch error. To allow model transitions, the `--rebuild-vectors` command implements a safe migration flow:
+`MemoryManager.reconcile_vector_store()` checks index-load errors, active SQLite IDs against the FAISS count and contiguous IDs, non-negative IDs still occupied by soft-deleted rows, and the saved dimension against the loaded index. An inconsistency requests an automatic rebuild when FAISS is available. A missing or corrupt index does not cause AI-Novel to delete its SQLite source metadata.
 
-1. **Bypass Flag**: When `WorkflowManager.rebuild_vector_index()` starts, it sets `_bypass_all_checks = True` on the client.
-2. **Rebuild**: `MemoryManager.rebuild_vector_index_from_metadata` processes all existing text segments, fetches embeddings from the new model (bypassing dimension checks), and reconstructs a brand-new FAISS index matching the new dimension.
-3. **Save Metadata**:
-   * The database stored `embedding_dim` is updated to the new model's dimension.
-   * The index is installed through staged atomic replacement coordinated with the SQLite batch.
-   * Rebuild runs and each rebuilt/skipped source row are retained in `vector_rebuild_runs` and `vector_rebuild_audit`.
-   * A load failure preserves `vector_metadata`; startup reconciliation requests a rebuild instead of deleting recovery data.
-   * A new `"Hello World!"` fingerprint is generated using the new model and saved to SQLite `schema_meta` as the new benchmark.
-4. **Re-engage**: `_bypass_all_checks` is reset to `False`, and `_fingerprint_verified` is marked as `True`, fully locking in the new model.
+If the provider cannot supply the probe or all required source embeddings, automatic recovery fails closed and stops workflow startup. It records a failed rebuild and skipped-row diagnostics where applicable, but does not replace an existing index or deactivate active metadata.
+
+### 3.5. Safe Migration Flow (Rebuilding Vectors)
+
+`--rebuild-vectors` is the explicit path for switching embedding spaces or repairing an inconsistent store:
+
+1. `WorkflowManager.rebuild_vector_index()` sets process verification back to pending and asks the original embedding client for a validated `"Hello World!"` probe **before** modifying the vector store. It does not use the former `_bypass_all_checks` flag.
+2. `MemoryManager.rebuild_vector_index_from_metadata()` receives the probe dimension and fingerprint, embeds active `vector_metadata` rows, and checks each result against that dimension. An empty index is created with the probe's dimension.
+3. By default, any missing, malformed, or mismatched source embedding fails the run. `vector_rebuild_runs` and `vector_rebuild_audit` retain the failure and per-row reasons; the prior index and active source rows remain unchanged. A low-level caller may explicitly choose `allow_partial=True`, which soft-deletes skipped rows; the CLI and automatic recovery do not choose it.
+4. On success, the staged FAISS replacement, reindexed metadata, saved dimension, and supplied fingerprint are coordinated in the SQLite/FAISS batch. The run is marked complete, and the process verification flag becomes `True`. A failed rebuild leaves the flag pending.
+
+A new project's initial validation can also populate missing fingerprint and dimension metadata; rebuilding is not the only operation that ever writes these keys. For an existing indexed project, replacing its confirmed fingerprint and dimension is part of a successful explicit rebuild.
+
+### 3.6. Soft-Deleted Metadata Boundary
+
+Ordinary rebuilds preserve existing soft-deleted rows, including their source fields and creation timestamps, without embedding their content or adding it to FAISS. Active rows receive contiguous non-negative IDs. Existing negative tombstone IDs remain when possible; legacy non-negative tombstone IDs move to unused negative IDs, with remaps recorded in the rebuild audit. `include_deleted=True` counts and audits all existing tombstones as `PRESERVED`; it does **not** reactivate them.
+
+Vector reset also moves retained rows into negative-ID space before a new empty FAISS index can reuse ID 0. A direct low-level vector write normalizes legacy non-negative tombstones in its current transaction before allocating a new ID. If a caller explicitly allows a partial rebuild, skipped active rows become new negative-ID tombstones. Restoring a deleted fact would require a separate, confirmed workflow, which is not implemented; rebuild never performs an implicit restore.
 
 ## 4. SQLite Schema Metadata Specs
 
-The system stores configuration state inside the key-value schema table `schema_meta`:
-
-| Key | Description | Type / Format |
+| Location | Description | Format |
 | :--- | :--- | :--- |
-| `"embedding_dim"` | Stored dimension of the active model. | `TEXT` (Stringified integer, e.g. `"128"`, `"768"`, `"1536"`) |
-| `"embedding_fingerprint"` | Float vector representation of the string `"Hello World!"`. | `TEXT` (JSON serialized array of floats, e.g., `"[0.123, -0.456, ...]"` ) |
+| `schema_meta.embedding_dim` | Confirmed dimension of the embedding space. | Positive integer stored as text. |
+| `schema_meta.embedding_fingerprint` | Vector for `"Hello World!"` from the confirmed provider output. | JSON array of finite numbers. |
+| `vector_rebuild_runs` | Rebuild status, counts, target dimension, and error. | One row per attempted rebuild. |
+| `vector_rebuild_audit` | Rebuilt, skipped, and preserved-row outcomes, including ID remaps. | Rows linked to a rebuild run. |
 
-## 5. Benefits Summary
+## 5. Benefits and Limits
 
-* **Zero-Configuration Maintenance**: Users no longer need to track or set the `dim` parameter. The system autodetects it.
-* **Fail-Safe Operation**: Completely guards the local vector database against silent structural corruption due to swapping models.
-* **Ultra-Low Latency & Cost-Effective**: Restricts expensive remote validation requests to a maximum of one request per run, while enforcing strict vector checks on every call.
+* **Less configuration:** Users need not maintain a separate dimension setting.
+* **Safer writes and recovery:** Dimension and vector-shape checks reject incompatible output; failed default rebuilds preserve active source facts and existing searchable state where present.
+* **Bounded ordinary-call overhead:** After one successful fixed-text verification in a process, ordinary calls perform only local vector checks. An explicit or automatic rebuild makes additional provider calls for source rows.
+* **Not an identity guarantee:** Matching dimension and fingerprint do not prove that every future embedding comes from an unchanged model, and a changed fingerprint alone does not prove a model switch.

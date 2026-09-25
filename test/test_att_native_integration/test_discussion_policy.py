@@ -1,4 +1,5 @@
 from .common import *
+from unittest import mock
 from att.runtime import run_team_discussion
 
 
@@ -82,12 +83,12 @@ class StructuredDiscussionPolicyTests(unittest.TestCase):
             config=SimpleNamespace(
                 episodic_memory=SimpleNamespace(enabled=True)
             ),
-            logger=unittest.mock.MagicMock(),
-            flush_memory_indexing=unittest.mock.AsyncMock(
+            logger=mock.MagicMock(),
+            flush_memory_indexing=mock.AsyncMock(
                 side_effect=RuntimeError("index unavailable")
             ),
-            list_memory_index_failures=unittest.mock.MagicMock(),
-            execute_team_discussion_detailed=unittest.mock.AsyncMock(
+            list_memory_index_failures=mock.MagicMock(),
+            execute_team_discussion_detailed=mock.AsyncMock(
                 return_value=expected
             ),
         )

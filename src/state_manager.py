@@ -479,16 +479,21 @@ class StoryStateManager:
             content = det.get("content")
             if content:
                 embedding = self.embedding_client.get_embedding(content)
-                if embedding:
-                    self.memory.add_semantic_fact(
-                        content,
-                        embedding,
-                        det.get("metadata", {}),
-                        source=source,
-                        chapter_num=chapter_num,
-                        source_commit_id=source_commit_id,
-                        intent_tag=intent_tag,
-                    )
+                try:
+                    missing_embedding = embedding is None or len(embedding) == 0
+                except TypeError as exc:
+                    raise RuntimeError(get_message("runtime.embedding_vector_invalid")) from exc
+                if missing_embedding:
+                    raise RuntimeError(get_message("runtime.fact_embedding_unavailable"))
+                self.memory.add_semantic_fact(
+                    content,
+                    embedding,
+                    det.get("metadata", {}),
+                    source=source,
+                    chapter_num=chapter_num,
+                    source_commit_id=source_commit_id,
+                    intent_tag=intent_tag,
+                )
 
         conflicts_after = self.memory.get_pending_conflict_count()
         new_conflicts = max(0, conflicts_after - conflicts_before)

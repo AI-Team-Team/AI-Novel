@@ -20,6 +20,7 @@ from att.db_committee import DatabaseManagementCommittee
 from memory import MemoryManager
 from state_manager import StoryStateManager
 from workflow import WorkflowManager
+from workflow_components.resources import get_message
 from att.runtime import select_designated_answer
 from att_result_helpers import make_discussion_result, make_team
 
@@ -59,6 +60,7 @@ class WorkflowLifecycleIntegrationTests(unittest.TestCase):
         self.wf.facts_dir = os.path.join(self.tmpdir, "facts")
         self.wf.archives_dir = os.path.join(self.tmpdir, "archives")
         self.wf.discussions_dir = os.path.join(self.tmpdir, "discussions")
+        self.wf.discussion_log_dir = os.path.join(self.tmpdir, "Discussion_Log")
         for path in (
             self.wf.chapters_dir,
             self.wf.guides_dir,
@@ -100,6 +102,35 @@ class WorkflowLifecycleIntegrationTests(unittest.TestCase):
                 }
             ],
         }
+
+    def test_missing_detail_embedding_rolls_back_fact_batch(self):
+        self.wf.embedding_client.get_embedding = lambda text: None
+        self.memory.begin_batch()
+        try:
+            with self.assertRaises(RuntimeError) as embedding_error:
+                self.wf._apply_fact_payload(self._payload(), source="scan_chapter", chapter_num=1)
+            self.assertEqual(
+                str(embedding_error.exception), get_message("runtime.fact_embedding_unavailable")
+            )
+        finally:
+            self.memory.end_batch(success=False)
+
+        self.assertIsNone(self.memory.get_character("Iris"))
+        self.memory.cursor.execute("SELECT COUNT(*) FROM vector_metadata")
+        self.assertEqual(self.memory.cursor.fetchone()[0], 0)
+
+    def test_scalar_detail_embedding_stops_fact_batch_with_localized_error(self):
+        self.wf.embedding_client.get_embedding = lambda text: 1.0
+        self.memory.begin_batch()
+        try:
+            with self.assertRaises(RuntimeError) as embedding_error:
+                self.wf._apply_fact_payload(self._payload(), source="scan_chapter", chapter_num=1)
+            self.assertEqual(
+                str(embedding_error.exception), get_message("runtime.embedding_vector_invalid")
+            )
+        finally:
+            self.memory.end_batch(success=False)
+        self.assertIsNone(self.memory.get_character("Iris"))
 
     def test_write_loop_conflict_replay_and_retrieval_chain(self):
         wf = self.wf
@@ -267,6 +298,7 @@ class ATTCurrentAPIIntegrationTests(unittest.TestCase):
                 wf.scanner_client = shared_client
                 wf.embedding_client = _EmbeddingClient()
                 wf.memory = None
+                wf.discussion_log_dir = os.path.join(tmpdir, "Discussion_Log")
                 wf.initialize_autonomy()
                 wf.db_committee.enabled = False
                 managers.append(wf)

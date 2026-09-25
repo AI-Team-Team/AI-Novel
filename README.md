@@ -106,7 +106,7 @@ The system validates state integrity during startup or recovery:
 * Validates generated files physically (file existence, non-zero size) and structurally (JSON/JSONL parsing and validation).
 * Checks database state for completeness using the SQLite `chapter_commits` status.
 * Purges incomplete files and commits before resuming from the last complete chapter.
-* Rebuilds the FAISS vector index from SQLite database metadata automatically if index files are missing or corrupted.
+* Rebuilds the FAISS vector index from SQLite metadata if index files are missing or corrupted; incomplete embedding results leave active facts untouched, while successful rebuilds retain soft-deleted metadata outside the searchable index.
 
 ### 4. Alternate Buffer Dashboard
 

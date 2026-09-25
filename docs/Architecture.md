@@ -303,8 +303,8 @@ The AI-facing `read_file_chunk` tool uses ATT's asynchronous `FileReadResult` co
 * `chapter_commits` now tracks `error_message`, `replay_count`, and `last_replayed_at`.
 * Failed scan commits can be replayed individually (`--replay-commit`) or in bulk (`--replay-failed-bulk`). Bulk replay supports a write-free preview, payload schema validation, per-commit reports, bounded retry attempts, and continue/stop failure policy.
 * Replay runs the same DB mutation path (`apply_fact_payload`) under a fresh transaction. Fact mutations and promotion of the commit row to `COMPLETED` are committed atomically.
-* FAISS is persisted with staged atomic replacement coordinated with the SQLite transaction. Startup reconciliation compares active metadata IDs with the loaded index and rebuilds mismatches or load failures without deleting source metadata.
-* Deterministic rebuilds retain soft-deleted skipped rows and permanent row-level reasons in `vector_rebuild_audit`, grouped by `vector_rebuild_runs`.
+* FAISS is persisted with staged atomic replacement coordinated with the SQLite transaction. Startup reconciliation compares active metadata IDs and saved embedding dimension with the loaded index. Rebuild dimensions come from a validated provider probe, including for empty indexes.
+* Automatic and CLI rebuilds fail closed if a source embedding is missing or invalid: the existing index and active metadata stay intact, while failed-run and skipped-row audit records are retained. Successful rebuilds preserve existing soft-deleted vector metadata outside FAISS, remapping non-negative tombstone IDs to unused negative IDs and auditing remaps. Vector reset and direct vector writes also move legacy tombstones into the negative-ID space before FAISS can reuse their old IDs. A low-level explicit `allow_partial=True` permits tombstoning skipped rows; CLI recovery never uses it.
 
 ## Initialization Seeding
 

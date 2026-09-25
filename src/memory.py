@@ -234,23 +234,58 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 self._safe_remove(backup)
 
     def reconcile_vector_store(self) -> Dict[str, object]:
-        """Compare active SQLite vector ids with the loaded FAISS index."""
+        """Compare active SQLite vector ids and dimensions with FAISS."""
 
         self.cursor.execute(
             "SELECT faiss_id FROM vector_metadata WHERE is_deleted = 0 ORDER BY faiss_id"
         )
         ids = [int(row[0]) for row in self.cursor.fetchall()]
+        self.cursor.execute(
+            """SELECT COUNT(*) FROM vector_metadata
+               WHERE faiss_id >= 0 AND (is_deleted != 0 OR is_deleted IS NULL)"""
+        )
+        positive_tombstones = int(self.cursor.fetchone()[0])
         index_total = int(self.index.ntotal) if self.index is not None else 0
         expected_ids = list(range(index_total))
         reasons = []
+        if positive_tombstones:
+            reasons.append(
+                get_message(
+                    "runtime.faiss_reason_positive_tombstones",
+                    count=positive_tombstones,
+                )
+            )
         if self.faiss_load_error:
-            reasons.append(f"index_load_error: {self.faiss_load_error}")
+            reasons.append(
+                get_message("runtime.faiss_reason_load_error", error=self.faiss_load_error)
+            )
         if self.index is None and ids:
-            reasons.append("active metadata exists without a loaded index")
+            reasons.append(get_message("runtime.faiss_reason_missing_index"))
         elif ids != expected_ids:
             reasons.append(
-                f"active metadata ids {ids} do not match index ids {expected_ids}"
+                get_message(
+                    "runtime.faiss_reason_id_mismatch",
+                    metadata_ids=ids,
+                    index_ids=expected_ids,
+                )
             )
+        saved_dim = self.get_schema_meta("embedding_dim")
+        if saved_dim is not None:
+            try:
+                parsed_dim = int(saved_dim)
+                if parsed_dim < 1:
+                    raise ValueError("non-positive dimension")
+            except (TypeError, ValueError):
+                reasons.append(get_message("runtime.faiss_reason_invalid_saved_dim"))
+            else:
+                if self.index is not None and self.index.d != parsed_dim:
+                    reasons.append(
+                        get_message(
+                            "runtime.faiss_reason_dim_mismatch",
+                            index_dim=self.index.d,
+                            saved_dim=parsed_dim,
+                        )
+                    )
         return {
             "healthy": not reasons,
             "requires_rebuild": bool(reasons),
@@ -259,6 +294,26 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             "load_error": self.faiss_load_error,
             "reasons": reasons,
         }
+
+    def _remap_nonnegative_tombstones(self) -> int:
+        """Move deleted metadata outside the FAISS ID space in the current batch."""
+
+        self.cursor.execute("SELECT MIN(faiss_id) FROM vector_metadata WHERE faiss_id < 0")
+        lowest_negative = self.cursor.fetchone()[0]
+        next_id = min(0, int(lowest_negative)) - 1 if lowest_negative is not None else -1
+        self.cursor.execute(
+            """SELECT faiss_id FROM vector_metadata
+               WHERE faiss_id >= 0 AND (is_deleted != 0 OR is_deleted IS NULL)
+               ORDER BY faiss_id"""
+        )
+        old_ids = [int(row[0]) for row in self.cursor.fetchall()]
+        for old_id in old_ids:
+            self.cursor.execute(
+                "UPDATE vector_metadata SET faiss_id = ?, is_deleted = 1 WHERE faiss_id = ?",
+                (next_id, old_id),
+            )
+            next_id -= 1
+        return len(old_ids)
 
     def _reset_vector_store(
         self,
@@ -285,6 +340,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             active_count = int(self.cursor.fetchone()[0])
             if preserve_metadata:
                 self.cursor.execute("UPDATE vector_metadata SET is_deleted = 1 WHERE is_deleted = 0")
+                self._remap_nonnegative_tombstones()
             else:
                 self.cursor.execute("DELETE FROM vector_metadata")
             self.index = faiss.IndexFlatL2(new_dim)
@@ -865,8 +921,22 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         if faiss is None:
             return
 
-        if not embedding:
+        if embedding is None:
             return
+
+        try:
+            embedding_values = np.asarray(embedding, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(get_message("runtime.embedding_vector_invalid")) from exc
+        if embedding_values.ndim == 1 and embedding_values.size == 0:
+            return
+        if (
+            embedding_values.ndim != 1
+            or not np.isfinite(embedding_values).all()
+            or np.any(np.abs(embedding_values) > np.finfo(np.float32).max)
+        ):
+            raise ValueError(get_message("runtime.embedding_vector_invalid"))
+        embedding_np = np.asarray([embedding_values], dtype=np.float32)
 
         self._audit_database_operation(
             "vector_writes",
@@ -875,13 +945,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             chapter_num,
         )
 
-        embedding_np = np.array([embedding], dtype=np.float32)
-        if embedding_np.ndim != 2:
-            return
-
         actual_dim = embedding_np.shape[1]
-        if actual_dim <= 0:
-            return
 
         normalized_content = (content or "").strip()
         if not normalized_content:
@@ -895,6 +959,7 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         if started_batch:
             self.begin_batch()
         try:
+            self._remap_nonnegative_tombstones()
             if self.index is None:
                 self.embedding_dim = actual_dim
                 self.index = faiss.IndexFlatL2(actual_dim)
@@ -994,59 +1059,137 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                 
         return results
 
-    def rebuild_vector_index_from_metadata(self, embedding_fn, include_deleted: bool = False) -> Dict[str, object]:
-        """Rebuild FAISS deterministically and retain a row-level audit trail."""
+    def rebuild_vector_index_from_metadata(
+        self,
+        embedding_fn,
+        include_deleted: bool = False,
+        *,
+        target_dim: Optional[int] = None,
+        fingerprint: Optional[List[float]] = None,
+        allow_partial: bool = False,
+    ) -> Dict[str, object]:
+        """Index active rows and preserve deleted rows outside FAISS."""
 
         if faiss is None:
             raise RuntimeError(get_message("runtime.faiss_unavailable"))
         if self._in_batch:
             raise RuntimeError(get_message("runtime.vector_batch_nested"))
+        if not isinstance(include_deleted, bool):
+            raise ValueError(get_message("validation.vector_include_deleted"))
+        if not isinstance(allow_partial, bool):
+            raise ValueError(get_message("validation.vector_allow_partial"))
+        if target_dim is not None and (
+            isinstance(target_dim, bool)
+            or not isinstance(target_dim, int)
+            or target_dim < 1
+        ):
+            raise ValueError(get_message("validation.vector_dimension"))
+        if fingerprint is not None:
+            try:
+                fingerprint_array = np.asarray(fingerprint, dtype=np.float64)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(get_message("runtime.embedding_probe_invalid")) from exc
+            if (
+                target_dim is None
+                or fingerprint_array.ndim != 1
+                or fingerprint_array.size != target_dim
+                or not np.isfinite(fingerprint_array).all()
+                or np.any(np.abs(fingerprint_array) > np.finfo(np.float32).max)
+            ):
+                raise ValueError(get_message("runtime.embedding_probe_invalid"))
+            fingerprint = fingerprint_array.tolist()
         self._audit_database_operation(
             "maintenance",
             "rebuild_vector_index",
-            {"include_deleted": include_deleted},
+            {"include_deleted": include_deleted, "allow_partial": allow_partial},
         )
         if self.index is None:
             print(get_message("runtime.faiss_rebuild_notice"))
 
         run_id = str(uuid.uuid4())
-        where_clause = "" if include_deleted else "WHERE is_deleted = 0"
         self.cursor.execute(
-            f"""SELECT faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag
-                FROM vector_metadata {where_clause} ORDER BY faiss_id ASC"""
+            """SELECT faiss_id, content, metadata, source_commit_id, version,
+                      is_deleted, intent_tag, timestamp_created
+               FROM vector_metadata WHERE is_deleted = 0 ORDER BY faiss_id ASC"""
         )
         rows = self.cursor.fetchall()
         self.cursor.execute(
+            """SELECT faiss_id, content, metadata, source_commit_id, version,
+                      is_deleted, intent_tag, timestamp_created
+               FROM vector_metadata
+               WHERE is_deleted != 0 OR is_deleted IS NULL
+               ORDER BY faiss_id ASC"""
+        )
+        tombstones = self.cursor.fetchall()
+        self.cursor.execute(
             """INSERT INTO vector_rebuild_runs
-               (run_id, status, source_count) VALUES (?, 'STARTED', ?)""",
-            (run_id, len(rows)),
+               (run_id, status, source_count, target_dim)
+               VALUES (?, 'STARTED', ?, ?)""",
+            (run_id, len(rows) + (len(tombstones) if include_deleted else 0), target_dim),
         )
         self.conn.commit()
 
         rebuilt_rows = []
         skipped_rows = []
-        target_dim = None
         for row in rows:
-            old_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag = row
+            content = row[1]
             reason = None
             try:
                 raw_embedding = embedding_fn(content)
-                embedding = list(raw_embedding) if raw_embedding is not None else None
+                embedding = (
+                    np.asarray(list(raw_embedding), dtype=np.float32)
+                    if raw_embedding is not None
+                    else None
+                )
             except Exception as exc:
                 embedding = None
                 reason = f"embedding_error: {exc}"
-            if not embedding:
+            if embedding is None or embedding.size == 0:
                 reason = reason or "empty_embedding"
+            elif embedding.ndim != 1 or not np.isfinite(embedding).all():
+                reason = "invalid_embedding"
             elif target_dim is None:
-                target_dim = len(embedding)
-            elif len(embedding) != target_dim:
+                target_dim = int(embedding.size)
+            elif embedding.size != target_dim:
                 reason = f"dimension_mismatch: expected {target_dim}, got {len(embedding)}"
             if reason:
                 skipped_rows.append((row, reason))
             else:
                 rebuilt_rows.append((row, embedding))
 
-        target_dim = target_dim or self.embedding_dim
+        if skipped_rows and (not allow_partial or not rebuilt_rows):
+            for row, reason in skipped_rows:
+                self.cursor.execute(
+                    """INSERT INTO vector_rebuild_audit
+                       (run_id, old_faiss_id, new_faiss_id, content, status, reason, metadata)
+                       VALUES (?, ?, NULL, ?, 'SKIPPED', ?, ?)""",
+                    (run_id, row[0], row[1], reason, row[2]),
+                )
+            error = get_message(
+                "runtime.vector_rebuild_incomplete",
+                skipped=len(skipped_rows),
+                total=len(rows),
+                run_id=run_id,
+            )
+            self.cursor.execute(
+                """UPDATE vector_rebuild_runs
+                   SET status='FAILED', completed_at=CURRENT_TIMESTAMP,
+                       rebuilt_count=0, skipped_count=?, error_message=?
+                   WHERE run_id=?""",
+                (len(skipped_rows), error, run_id),
+            )
+            self.conn.commit()
+            raise RuntimeError(error)
+        if target_dim is None:
+            error = get_message("runtime.vector_rebuild_dimension_unknown")
+            self.cursor.execute(
+                """UPDATE vector_rebuild_runs
+                   SET status='FAILED', completed_at=CURRENT_TIMESTAMP,
+                       error_message=? WHERE run_id=?""",
+                (error, run_id),
+            )
+            self.conn.commit()
+            raise RuntimeError(error)
         try:
             new_index = faiss.IndexFlatL2(target_dim)
             started_batch = not self._in_batch
@@ -1064,13 +1207,20 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
         try:
             self.cursor.execute("DELETE FROM vector_metadata")
             for new_id, (row, embedding) in enumerate(rebuilt_rows):
-                old_id, content, metadata_json, source_commit_id, version, is_deleted, intent_tag = row
+                (
+                    old_id, content, metadata_json, source_commit_id,
+                    version, _, intent_tag, timestamp_created,
+                ) = row
                 new_index.add(np.array([embedding], dtype=np.float32))
                 self.cursor.execute(
                     """INSERT INTO vector_metadata
-                       (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (new_id, content, metadata_json, source_commit_id, int(version or 1), int(is_deleted or 0), intent_tag or ""),
+                       (faiss_id, content, metadata, source_commit_id, version,
+                        is_deleted, intent_tag, timestamp_created)
+                       VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+                    (
+                        new_id, content, metadata_json, source_commit_id,
+                        version, intent_tag, timestamp_created,
+                    ),
                 )
                 self.cursor.execute(
                     """INSERT INTO vector_rebuild_audit
@@ -1079,14 +1229,51 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
                     (run_id, old_id, new_id, content, metadata_json),
                 )
 
-            tombstone_id = -1
-            for row, reason in skipped_rows:
-                old_id, content, metadata_json, source_commit_id, version, _, intent_tag = row
+            tombstone_id = min(
+                [0] + [int(row[0]) for row in tombstones if int(row[0]) < 0]
+            ) - 1
+            for row in tombstones:
+                (
+                    old_id, content, metadata_json, source_commit_id,
+                    version, _, intent_tag, timestamp_created,
+                ) = row
+                if int(old_id) < 0:
+                    new_id = int(old_id)
+                else:
+                    new_id = tombstone_id
+                    tombstone_id -= 1
                 self.cursor.execute(
                     """INSERT INTO vector_metadata
-                       (faiss_id, content, metadata, source_commit_id, version, is_deleted, intent_tag)
-                       VALUES (?, ?, ?, ?, ?, 1, ?)""",
-                    (tombstone_id, content, metadata_json, source_commit_id, int(version or 1), intent_tag or ""),
+                       (faiss_id, content, metadata, source_commit_id, version,
+                        is_deleted, intent_tag, timestamp_created)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (
+                        new_id, content, metadata_json, source_commit_id,
+                        version, intent_tag, timestamp_created,
+                    ),
+                )
+                if include_deleted or new_id != old_id:
+                    self.cursor.execute(
+                        """INSERT INTO vector_rebuild_audit
+                           (run_id, old_faiss_id, new_faiss_id, content, status, reason, metadata)
+                           VALUES (?, ?, ?, ?, 'PRESERVED', 'soft_deleted_not_indexed', ?)""",
+                        (run_id, old_id, new_id, content, metadata_json),
+                    )
+
+            for row, reason in skipped_rows:
+                (
+                    old_id, content, metadata_json, source_commit_id,
+                    version, _, intent_tag, timestamp_created,
+                ) = row
+                self.cursor.execute(
+                    """INSERT INTO vector_metadata
+                       (faiss_id, content, metadata, source_commit_id, version,
+                        is_deleted, intent_tag, timestamp_created)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (
+                        tombstone_id, content, metadata_json, source_commit_id,
+                        version, intent_tag, timestamp_created,
+                    ),
                 )
                 self.cursor.execute(
                     """INSERT INTO vector_rebuild_audit
@@ -1099,6 +1286,8 @@ class MemoryManager(MemorySchemaMixin, MemoryConflictCommitMixin):
             self.index = new_index
             self.embedding_dim = target_dim
             self.set_schema_meta("embedding_dim", str(target_dim))
+            if fingerprint is not None:
+                self.set_schema_meta("embedding_fingerprint", json.dumps(fingerprint))
             self._faiss_dirty = True
             self.cursor.execute(
                 """UPDATE vector_rebuild_runs

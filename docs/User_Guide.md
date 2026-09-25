@@ -216,7 +216,10 @@ If you change your Embedding model or need to refresh the vector store:
 ```
 
 **Automatic Self-Healing**:
-At startup, the system reconciles the loaded FAISS count and contiguous IDs against active SQLite `vector_metadata`. Missing/corrupt indexes and metadata/index mismatches trigger reconstruction without deleting source metadata. Each rebuild is recorded in `vector_rebuild_runs`; skipped source rows and their reasons remain available in `vector_rebuild_audit` and as soft-deleted metadata tombstones.
+
+At startup, the system reconciles the loaded FAISS count, contiguous IDs, and dimension against active SQLite `vector_metadata` and the saved embedding dimension. Missing/corrupt indexes and mismatches trigger reconstruction. Before a rebuild, AI-Novel probes the configured embedding provider for its actual dimension, even when there are no source rows. If any source row cannot be embedded, automatic and CLI rebuilds fail without replacing the old index or soft-deleting active metadata; the failed run and skipped-row reasons remain in `vector_rebuild_runs` and `vector_rebuild_audit`. Restore the provider and retry. A changed fixed-text fingerprint can indicate provider drift as well as a model change, so confirm the model configuration before rebuilding. Only low-level callers who explicitly opt into `allow_partial=True` can accept skipped-row tombstones.
+
+Successful rebuilds keep previously soft-deleted vector metadata for audit but do not embed it or make it searchable. The low-level `include_deleted=True` option adds tombstone preservation entries to the rebuild report; it does not restore deleted content. There is no bulk reactivation through `--rebuild-vectors`.
 
 ## 6. Real-Time Terminal Dashboard & Logging
 

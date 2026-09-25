@@ -19,6 +19,8 @@ class TestEmbeddingValidation(unittest.TestCase):
     def setUp(self):
         # Create temp directory for database and faiss index
         self.test_dir = tempfile.mkdtemp()
+        self.original_cwd = os.getcwd()
+        os.chdir(self.test_dir)
         self.db_path = os.path.join(self.test_dir, "test_facts.db")
         self.faiss_path = os.path.join(self.test_dir, "test_index.faiss")
         
@@ -37,6 +39,7 @@ class TestEmbeddingValidation(unittest.TestCase):
         config.DB_PATH = self.orig_db_path
         config.FAISS_INDEX_PATH = self.orig_faiss_path
         config.ATT_STATE_DB_PATH = self.orig_att_state_path
+        os.chdir(self.original_cwd)
         
         # Remove temp directory
         shutil.rmtree(self.test_dir)
@@ -138,7 +141,283 @@ class TestEmbeddingValidation(unittest.TestCase):
             wm2.embedding_client.get_embedding("another query")
             
         self.assertEqual(get_message("runtime.vector_model_mismatch"), str(ctx.exception))
+        self.assertFalse(wm2.embedding_client._fingerprint_verified)
+        with self.assertRaises(RuntimeError) as retry_error:
+            wm2.embedding_client.get_embedding("retry query")
+        self.assertEqual(str(retry_error.exception), get_message("runtime.vector_model_mismatch"))
+        self.assertFalse(wm2.embedding_client._fingerprint_verified)
         wm2.close()
+
+    @patch("workflow.LLMClient")
+    def test_missing_probe_is_retried_without_saving_metadata(self, mock_llm_client_class):
+        embedding_client = MagicMock()
+        probe_calls = 0
+
+        def embed(text):
+            nonlocal probe_calls
+            if text == "Hello World!":
+                probe_calls += 1
+                return None if probe_calls == 1 else [0.2] * 4
+            return [0.3] * 4
+
+        embedding_client.get_embedding = embed
+        mock_llm_client_class.side_effect = lambda model_config, enable_embedding=False: (
+            embedding_client if enable_embedding else MagicMock()
+        )
+        from workflow import WorkflowManager
+        wm = WorkflowManager()
+        try:
+            with self.assertRaises(RuntimeError) as probe_error:
+                wm.embedding_client.get_embedding("first query")
+            self.assertEqual(str(probe_error.exception), get_message("runtime.embedding_probe_unavailable"))
+            self.assertFalse(wm.embedding_client._fingerprint_verified)
+            self.assertIsNone(wm.memory.get_schema_meta("embedding_fingerprint"))
+            self.assertEqual(wm.embedding_client.get_embedding("second query"), [0.3] * 4)
+            self.assertTrue(wm.embedding_client._fingerprint_verified)
+            self.assertEqual(probe_calls, 2)
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_out_of_range_stored_fingerprint_is_reported_as_invalid(self, mock_llm_client_class):
+        from memory import MemoryManager
+        from workflow import WorkflowManager
+
+        memory = MemoryManager(self.db_path, self.faiss_path)
+        memory.set_schema_meta("embedding_fingerprint", json.dumps([1e100] * 4))
+        memory.set_schema_meta("embedding_dim", "4")
+        memory.close()
+
+        embedding_client = MagicMock()
+        embedding_client.get_embedding = lambda text: [0.2] * 4
+        mock_llm_client_class.side_effect = lambda model_config, enable_embedding=False: (
+            embedding_client if enable_embedding else MagicMock()
+        )
+        wm = WorkflowManager()
+        try:
+            with self.assertRaises(RuntimeError) as fingerprint_error:
+                wm.embedding_client.get_embedding("query")
+            self.assertEqual(
+                str(fingerprint_error.exception),
+                get_message("runtime.embedding_fingerprint_invalid"),
+            )
+            self.assertFalse(wm.embedding_client._fingerprint_verified)
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_ordinary_embeddings_reject_malformed_and_nonfinite_vectors(self, mock_llm_client_class):
+        current_vector = [0.2] * 4
+        embedding_client = MagicMock()
+
+        def embed(text):
+            return [0.1] * 4 if text == "Hello World!" else current_vector
+
+        embedding_client.get_embedding = embed
+        mock_llm_client_class.side_effect = lambda model_config, enable_embedding=False: (
+            embedding_client if enable_embedding else MagicMock()
+        )
+        from workflow import WorkflowManager
+        wm = WorkflowManager()
+        try:
+            self.assertEqual(wm.embedding_client.get_embedding("warmup"), [0.2] * 4)
+            for current_vector in (
+                [],
+                [[0.2] * 4],
+                [float("nan")] * 4,
+                [float("inf")] * 4,
+                [1e100] * 4,
+                "not a vector",
+            ):
+                with self.subTest(vector=current_vector):
+                    with self.assertRaises(RuntimeError) as vector_error:
+                        wm.embedding_client.get_embedding("ordinary query")
+                    self.assertEqual(str(vector_error.exception), get_message("runtime.embedding_vector_invalid"))
+            current_vector = [0.3] * 4
+            self.assertEqual(wm.embedding_client.get_embedding("recovered query"), [0.3] * 4)
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_invalid_probe_is_retried_without_marking_model_verified(self, mock_llm_client_class):
+        probe_vector = [float("nan")] * 4
+        embedding_client = MagicMock()
+
+        def embed(text):
+            return probe_vector if text == "Hello World!" else [0.2] * 4
+
+        embedding_client.get_embedding = embed
+        mock_llm_client_class.side_effect = lambda model_config, enable_embedding=False: (
+            embedding_client if enable_embedding else MagicMock()
+        )
+        from workflow import WorkflowManager
+        wm = WorkflowManager()
+        try:
+            for probe_vector in ([float("nan")] * 4, [[0.1] * 4], [1e100] * 4, []):
+                with self.subTest(probe=probe_vector):
+                    with self.assertRaises(RuntimeError) as probe_error:
+                        wm.embedding_client.get_embedding("query")
+                    self.assertEqual(
+                        str(probe_error.exception), get_message("runtime.embedding_probe_invalid")
+                    )
+                    self.assertFalse(wm.embedding_client._fingerprint_verified)
+                    self.assertIsNone(wm.memory.get_schema_meta("embedding_fingerprint"))
+            probe_vector = [0.1] * 4
+            self.assertEqual(wm.embedding_client.get_embedding("query"), [0.2] * 4)
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_empty_rebuild_uses_probed_dimension_and_survives_restart(self, mock_llm_client_class):
+        def new_client(model_config, enable_embedding=False):
+            client = MagicMock()
+            if enable_embedding:
+                client.get_embedding = lambda text: [0.2] * 4
+            return client
+
+        mock_llm_client_class.side_effect = new_client
+        from workflow import WorkflowManager
+        wm = WorkflowManager()
+        try:
+            stats = wm.rebuild_vector_index()
+            self.assertEqual(stats["rebuilt"], 0)
+            self.assertEqual(wm.memory.index.d, 4)
+            self.assertEqual(wm.memory.get_schema_meta("embedding_dim"), "4")
+            self.assertTrue(wm.memory.reconcile_vector_store()["healthy"])
+            self.assertEqual(wm.embedding_client.get_embedding("query"), [0.2] * 4)
+        finally:
+            wm.close()
+
+        reopened = WorkflowManager()
+        try:
+            self.assertEqual(reopened.memory.index.d, 4)
+            self.assertTrue(reopened.memory.reconcile_vector_store()["healthy"])
+            self.assertEqual(reopened.embedding_client.get_embedding("query"), [0.2] * 4)
+        finally:
+            reopened.close()
+
+    @patch("workflow.LLMClient")
+    def test_auto_rebuild_provider_failure_preserves_source_metadata(self, mock_llm_client_class):
+        from memory import MemoryManager
+        from workflow import WorkflowManager
+
+        memory = MemoryManager(self.db_path, self.faiss_path)
+        memory.add_semantic_fact("preserve this fact", [0.1] * 4, {"source": "test"})
+        memory.close()
+        os.unlink(self.faiss_path)
+
+        embedding_client = MagicMock()
+        embedding_client.get_embedding = lambda text: None
+        mock_llm_client_class.side_effect = lambda model_config, enable_embedding=False: (
+            embedding_client if enable_embedding else MagicMock()
+        )
+        with self.assertRaises(RuntimeError) as rebuild_error:
+            WorkflowManager()
+        self.assertIn(get_message("runtime.embedding_probe_unavailable"), str(rebuild_error.exception))
+        reopened = MemoryManager(self.db_path, self.faiss_path)
+        try:
+            self.assertTrue(reopened.reconcile_vector_store()["requires_rebuild"])
+            reopened.cursor.execute("SELECT content, is_deleted FROM vector_metadata")
+            self.assertEqual(reopened.cursor.fetchall(), [("preserve this fact", 0)])
+            self.assertIsNone(reopened.index)
+            self.assertFalse(os.path.exists(self.faiss_path))
+        finally:
+            reopened.close()
+
+    @patch("workflow.LLMClient")
+    def test_startup_reconciles_wrong_dimension_empty_index(self, mock_llm_client_class):
+        import faiss
+        from memory import MemoryManager
+        from workflow import WorkflowManager
+
+        faiss.write_index(faiss.IndexFlatL2(768), self.faiss_path)
+        memory = MemoryManager(self.db_path, self.faiss_path)
+        memory.set_schema_meta("embedding_dim", "4")
+        memory.close()
+
+        def new_client(model_config, enable_embedding=False):
+            client = MagicMock()
+            if enable_embedding:
+                client.get_embedding = lambda text: [0.2] * 4
+            return client
+
+        mock_llm_client_class.side_effect = new_client
+        wm = WorkflowManager()
+        try:
+            self.assertEqual(wm.memory.index.d, 4)
+            self.assertTrue(wm.vector_health["healthy"])
+            self.assertEqual(wm.embedding_client.get_embedding("query"), [0.2] * 4)
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_startup_rebuild_preserves_legacy_positive_tombstone(self, mock_llm_client_class):
+        from memory import MemoryManager
+        from workflow import WorkflowManager
+
+        memory = MemoryManager(self.db_path, self.faiss_path)
+        memory.cursor.execute(
+            """INSERT INTO vector_metadata (faiss_id, content, metadata, is_deleted)
+               VALUES (0, 'deleted secret', '{}', 1)"""
+        )
+        memory.conn.commit()
+        memory.close()
+
+        def new_client(model_config, enable_embedding=False):
+            client = MagicMock()
+            if enable_embedding:
+                def embed(text):
+                    self.assertEqual(text, "Hello World!")
+                    return [0.2] * 4
+                client.get_embedding = embed
+            return client
+
+        mock_llm_client_class.side_effect = new_client
+        wm = WorkflowManager()
+        try:
+            self.assertEqual((wm.memory.index.d, wm.memory.index.ntotal), (4, 0))
+            self.assertTrue(wm.vector_health["healthy"])
+            wm.memory.cursor.execute(
+                "SELECT faiss_id, is_deleted FROM vector_metadata WHERE content='deleted secret'"
+            )
+            self.assertEqual(wm.memory.cursor.fetchone(), (-1, 1))
+        finally:
+            wm.close()
+
+    @patch("workflow.LLMClient")
+    def test_failed_rebuild_keeps_previous_fingerprint_and_searchable_index(self, mock_llm_client_class):
+        fail_fact_embedding = False
+
+        def embed(text):
+            if fail_fact_embedding and text == "existing fact":
+                return None
+            return [0.2] * 4
+
+        def new_client(model_config, enable_embedding=False):
+            client = MagicMock()
+            if enable_embedding:
+                client.get_embedding = embed
+            return client
+
+        mock_llm_client_class.side_effect = new_client
+        from workflow import WorkflowManager
+        wm = WorkflowManager()
+        try:
+            wm.embedding_client.get_embedding("warmup")
+            previous_fingerprint = wm.memory.get_schema_meta("embedding_fingerprint")
+            wm.memory.add_semantic_fact("existing fact", [0.2] * 4, {"source": "test"})
+            fail_fact_embedding = True
+
+            with self.assertRaises(RuntimeError):
+                wm.rebuild_vector_index()
+
+            self.assertFalse(wm.embedding_client._fingerprint_verified)
+            self.assertEqual(wm.memory.get_schema_meta("embedding_fingerprint"), previous_fingerprint)
+            self.assertEqual(wm.memory.index.ntotal, 1)
+            self.assertTrue(wm.memory.reconcile_vector_store()["healthy"])
+            self.assertEqual(wm.embedding_client.get_embedding("ordinary query"), [0.2] * 4)
+        finally:
+            wm.close()
 
     @patch("workflow.LLMClient")
     def test_dimension_validation_on_every_call(self, mock_llm_client_class):
@@ -162,11 +441,14 @@ class TestEmbeddingValidation(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             wm.embedding_client.get_embedding("test")
             
-        self.assertIn("Embedding dimension mismatch", str(ctx.exception))
+        self.assertEqual(
+            str(ctx.exception),
+            get_message("runtime.vector_dim_mismatch", expected=128, actual=64),
+        )
         wm.close()
 
     @patch("workflow.LLMClient")
-    def test_rebuild_vectors_updates_metadata_and_bypasses(self, mock_llm_client_class):
+    def test_rebuild_vectors_updates_metadata_after_complete_rebuild(self, mock_llm_client_class):
         # 1. Initialize with 128-dim fingerprint
         mock_embedding_client = MagicMock()
         
@@ -210,7 +492,7 @@ class TestEmbeddingValidation(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             wm.embedding_client.get_embedding("generic call")
             
-        # Now run rebuild_vector_index! It should bypass checks and rebuild successfully.
+        # Rebuild uses the original provider without the old dimension guard.
         import faiss
         wm.memory.index = faiss.IndexFlatL2(128) # Initialize faiss index
         

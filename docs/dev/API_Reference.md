@@ -79,9 +79,9 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
 * `get_failed_chapter_commits(limit: int = 20)`
   * Lists failed commit batches for replay triage.
 * `reconcile_vector_store() -> Dict[str, object]`
-  * Reports index load errors, active metadata count, FAISS count, ID alignment, and whether rebuild is required.
+  * Reports index load errors, active metadata count, FAISS count, ID and saved-dimension alignment, legacy non-negative tombstone IDs, and whether rebuild is required.
 * `_reset_vector_store(new_dim: int, preserve_metadata: bool = True, reason: str = "manual_reset") -> Dict[str, int]`
-  * Performs a transaction-coordinated vector reset; source metadata can be retained as tombstones.
+  * Performs a transaction-coordinated vector reset; retained metadata becomes negative-ID tombstones so fresh FAISS IDs cannot collide with it.
 * `queue_conflict(...) -> int`
   * Pushes unresolved contradictions to `conflict_queue`.
   * Supports severity and triage metadata via `blocking_level`, `priority`, and `suggested_action`.
@@ -115,13 +115,15 @@ mm = MemoryManager(db_path: str, faiss_path: str, embedding_dim: int = 768)
 
 * `add_semantic_fact(content: str, embedding: List[float], metadata: Dict = None, source: str = "unknown", chapter_num: Optional[int] = None, source_commit_id: Optional[str] = None, intent_tag: str = "")`
   * Adds a text chunk to the vector store.
+  * Rejects malformed nonempty, non-finite, or float32-unrepresentable vectors before changing SQLite or FAISS. `None` and empty direct inputs remain no-ops.
   * Injects `chapter_num` directly into the SQLite metadata JSON column to enable spatiotemporal Future Gate filtering and Temporal Proximity boost reranking during retrieval.
   * Supports audit metadata: `source_commit_id`, `intent_tag`.
 * `search_semantic(query_embedding: List[float], k: int = 5) -> List[Dict]`
   * Retrieves the top `k` most similar text chunks.
-* `rebuild_vector_index_from_metadata(embedding_fn, include_deleted: bool = False) -> Dict[str, int]`
-  * Deterministically rebuilds FAISS from `vector_metadata` rows and remaps `faiss_id`.
-  * Returns a `run_id`; `vector_rebuild_runs` and `vector_rebuild_audit` retain completion and skipped-row reasons.
+* `rebuild_vector_index_from_metadata(embedding_fn, include_deleted: bool = False, *, target_dim: Optional[int] = None, fingerprint: Optional[List[float]] = None, allow_partial: bool = False) -> Dict[str, object]`
+  * Rebuilds FAISS from `vector_metadata` and remaps `faiss_id`. The workflow supplies a validated probe dimension and fingerprint; an empty low-level rebuild requires `target_dim`.
+  * Defaults to fail-closed when any source row cannot be embedded, preserving the old index and active rows while recording a failed run and skipped-row reasons. Only an explicit `allow_partial=True` permits skipped-row tombstones.
+  * All rebuilds preserve existing soft-deleted rows outside FAISS. Existing negative tombstone IDs stay stable; non-negative tombstone IDs are remapped to unused negative IDs and audited. `include_deleted=True` also counts and audits unchanged tombstones as `PRESERVED`; it never embeds or reactivates them.
 
 ## `src.workflow`
 
@@ -216,8 +218,8 @@ Orchestrates the multi-agent process.
   * Graceful degradation: if Critic call fails, returns facts unchanged.
 * `batch_triage_non_blocking(limit: int = 50, note: str = ...) -> int`
   * Batch-resolves NON_BLOCKING conflicts via `keep_existing`.
-* `rebuild_vector_index() -> Dict[str, int]`
-  * Rebuilds vector index from metadata using current embedding backend.
+* `rebuild_vector_index() -> Dict[str, object]`
+  * Probes the current embedding backend, then performs a complete fail-closed rebuild from metadata. Successful commits update index, dimension, and fingerprint together.
 * `run_continuous_loop(start_chapter: int, count: int)`
   * Executes Plan -> Write -> Review/Revise -> Scan in sequence for a chapter range.
   * Resume & Error Handling behavior:
